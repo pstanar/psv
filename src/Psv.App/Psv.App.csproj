@@ -1,0 +1,74 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
+    <AssemblyName>psv</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.0.5" />
+    <PackageReference Include="Avalonia.Controls.ColorPicker" Version="12.0.5" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.5" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.5" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.5" />
+    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3">
+      <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
+      <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Psv.Core\Psv.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    Avalonia's native asset packages (SkiaSharp, HarfBuzzSharp, ...) ship binaries for every RID
+    they support and copy all of them to the output whenever no single RuntimeIdentifier is
+    pinned - RuntimeIdentifiers above only governs `publish -r`, not this. Framework-dependent
+    `build`/`run` output would otherwise carry native libraries for a dozen platforms we don't
+    ship (musl, riscv64, loongarch64, win-x86, ...); trim it down to what we actually support.
+    macOS ships one universal "osx" folder rather than an arch-specific one, so that's kept as-is.
+  -->
+  <Target Name="RemoveUnsupportedRuntimeAssets" AfterTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
+                                Condition="'%(ReferenceCopyLocalPaths.RuntimeIdentifier)' != ''
+                                           and '%(ReferenceCopyLocalPaths.RuntimeIdentifier)' != 'win-x64'
+                                           and '%(ReferenceCopyLocalPaths.RuntimeIdentifier)' != 'linux-x64'
+                                           and '%(ReferenceCopyLocalPaths.RuntimeIdentifier)' != 'osx'" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Native asset packages (SkiaSharp, HarfBuzzSharp) ship their own .pdb files alongside the
+    native .dll/.so in runtimes/<rid>/native/. These aren't produced by our build - DebugType
+    above has no effect on them - so they have to be filtered out of the copy-local/publish sets
+    directly. build/run output goes through ReferenceCopyLocalPaths; publish output (incl.
+    single-file) goes through the separately-computed ResolvedFileToPublish, so both need it.
+  -->
+  <Target Name="RemoveNativePdbsFromBuildOutput" AfterTargets="ResolveAssemblyReferences" Condition="'$(Configuration)' == 'Release'">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
+                                Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+
+  <!-- MSBuild only runs a given target once per build, so the publish-side removal needs its own
+       target rather than sharing RemoveNativePdbsFromBuildOutput above via a second AfterTargets. -->
+  <Target Name="RemoveNativePdbsFromPublishOutput" AfterTargets="ComputeResolvedFilesToPublishList" Condition="'$(Configuration)' == 'Release'">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                              Condition="'%(ResolvedFileToPublish.Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+</Project>

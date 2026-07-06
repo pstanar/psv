@@ -1,0 +1,84 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="using:Psv.App"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+        x:Class="Psv.App.MainWindow"
+        Icon="/Assets/app-icon.png"
+        Title="psv"
+        Width="900" Height="600">
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_File">
+                <MenuItem Header="_Open..." Click="OnOpenClick" InputGesture="Ctrl+O" />
+                <MenuItem Header="_Reload" Click="OnReloadClick" InputGesture="F2" />
+            </MenuItem>
+            <MenuItem Header="_Edit">
+                <MenuItem Header="_Copy" Click="OnEditCopyClick" InputGesture="Ctrl+C" />
+                <Separator />
+                <MenuItem Header="_Find..." Click="OnFindMenuClick" InputGesture="Ctrl+F" />
+                <MenuItem Header="_Go To Line..." Click="OnGoToLineClick" InputGesture="Ctrl+G" />
+                <Separator />
+                <MenuItem Header="_Cycle Encoding" Click="OnCycleEncodingClick" InputGesture="Ctrl+Shift+E" />
+            </MenuItem>
+            <MenuItem Header="_View">
+                <MenuItem Header="_Line Numbers" Name="LineNumbersMenuItem" ToggleType="CheckBox" Click="OnToggleLineNumbers" InputGesture="Ctrl+N" />
+                <MenuItem Header="_Column Ruler" Name="ColumnRulerMenuItem" ToggleType="CheckBox" Click="OnToggleColumnRuler" InputGesture="Ctrl+R" />
+                <MenuItem Header="_Word Wrap" Name="WordWrapMenuItem" ToggleType="CheckBox" Click="OnToggleWordWrap" InputGesture="Ctrl+W" />
+                <MenuItem Header="_Zebra Striping" Name="ZebraStripingMenuItem" ToggleType="CheckBox" Click="OnToggleZebraStriping" InputGesture="Ctrl+Z" />
+                <MenuItem Header="_Live Tail" Name="LiveTailMenuItem" ToggleType="CheckBox" Click="OnToggleLiveTail" InputGesture="Ctrl+T" />
+                <Separator />
+                <MenuItem Header="_Appearance..." Click="OnAppearanceClick" />
+                <Separator />
+                <MenuItem Header="_About..." Click="OnAboutClick" />
+            </MenuItem>
+        </Menu>
+        <Border Name="FindBar"
+                DockPanel.Dock="Top"
+                IsVisible="False"
+                Background="#F0F0F0"
+                BorderBrush="Gray"
+                BorderThickness="0,0,0,1"
+                Padding="6">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBox Name="FindTextBox" Width="240" PlaceholderText="Find..." KeyDown="OnFindTextBoxKeyDown" />
+                <CheckBox Name="FindRegexCheckBox" Content="Regex" Click="OnFindOptionChanged" />
+                <CheckBox Name="FindCaseSensitiveCheckBox" Content="Case sensitive" Click="OnFindOptionChanged" />
+                <Button Content="Previous" Click="OnFindPreviousClick" />
+                <Button Content="Next" Click="OnFindNextClick" />
+                <TextBlock Name="FindStatusText" VerticalAlignment="Center" Foreground="DimGray" />
+                <Button Content="✕" Click="OnFindCloseClick" />
+            </StackPanel>
+        </Border>
+        <Border DockPanel.Dock="Bottom" BorderBrush="Gray" BorderThickness="0,1,0,0" Padding="6,3">
+            <StackPanel Orientation="Horizontal" Spacing="16">
+                <TextBlock Name="StatusPathText" />
+                <TextBlock Name="StatusSizeText" />
+                <TextBlock Name="StatusEncodingText"
+                           Cursor="Hand"
+                           TextDecorations="Underline"
+                           PointerPressed="OnEncodingLabelClick"
+                           ToolTip.Tip="Click to change encoding" />
+                <TextBlock Name="StatusLineEndingText" />
+                <TextBlock Name="StatusPositionText" />
+                <TextBlock Name="StatusStateText" FontWeight="Bold" />
+            </StackPanel>
+        </Border>
+        <Grid ColumnDefinitions="*,Auto" RowDefinitions="*,Auto">
+            <local:DocumentView Name="DocView" Grid.Row="0" Grid.Column="0" />
+            <ScrollBar Name="VScrollBar"
+                       Grid.Row="0" Grid.Column="1"
+                       Orientation="Vertical"
+                       Width="18"
+                       Minimum="0"
+                       SmallChange="1" />
+            <ScrollBar Name="HScrollBar"
+                       Grid.Row="1" Grid.Column="0"
+                       Orientation="Horizontal"
+                       Height="18"
+                       Minimum="0"
+                       SmallChange="4" />
+        </Grid>
+    </DockPanel>
+</Window>

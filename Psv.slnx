@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Psv.App/Psv.App.csproj" />
+    <Project Path="src/Psv.Core/Psv.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Psv.App.Tests/Psv.App.Tests.csproj" />
+    <Project Path="tests/Psv.Core.Tests/Psv.Core.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,33 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Psv.App.AppearanceWindow"
+        Title="Appearance"
+        Width="380" SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+    <StackPanel Margin="14" Spacing="10">
+        <TextBlock Text="Font family (monospace)" FontWeight="Bold" />
+        <ComboBox Name="FontFamilyCombo" IsEditable="True" HorizontalAlignment="Stretch" />
+
+        <TextBlock Text="Font size" FontWeight="Bold" />
+        <NumericUpDown Name="FontSizeUpDown" Minimum="6" Maximum="72" Increment="1" FormatString="0" />
+
+        <Separator Margin="0,4" />
+
+        <CheckBox Name="FollowSystemThemeCheckBox" Content="Follow system theme (light/dark)" Click="OnFollowSystemThemeClick" />
+
+        <TextBlock Text="Text color" FontWeight="Bold" />
+        <ColorPicker Name="TextColorPicker" HorizontalAlignment="Left" />
+
+        <TextBlock Text="Zebra stripe color — even lines" FontWeight="Bold" />
+        <ColorPicker Name="ZebraEvenColorPicker" HorizontalAlignment="Left" />
+
+        <TextBlock Text="Zebra stripe color — odd lines" FontWeight="Bold" />
+        <ColorPicker Name="ZebraOddColorPicker" HorizontalAlignment="Left" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,8,0,0">
+            <Button Content="Cancel" Click="OnCancelClick" />
+            <Button Content="OK" Click="OnOkClick" IsDefault="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

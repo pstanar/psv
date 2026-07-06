@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <!-- xunit.v3 runs on Microsoft.Testing.Platform rather than VSTest; this opts `dotnet test` into it. -->
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Headless Avalonia platform lets MainWindow (and its named XAML controls) be constructed
+         and driven in-process, without a real window server - needed to exercise the async
+         indexing/tailing lifecycle end-to-end. -->
+    <PackageReference Include="Avalonia.Headless" Version="12.0.5" />
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="12.0.5" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Psv.App\Psv.App.csproj" />
+    <ProjectReference Include="..\..\src\Psv.Core\Psv.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- NU1510 (package pruning) is a false positive here: cp1252 genuinely throws
+         NotSupportedException on net10.0 without this provider registered. -->
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="10.0.9" NoWarn="NU1510" />
+  </ItemGroup>
+
+</Project>
