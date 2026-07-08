@@ -37,7 +37,6 @@
         <Border Name="FindBar"
                 DockPanel.Dock="Top"
                 IsVisible="False"
-                Background="#F0F0F0"
                 BorderBrush="Gray"
                 BorderThickness="0,0,0,1"
                 Padding="6">
@@ -47,7 +46,7 @@
                 <CheckBox Name="FindCaseSensitiveCheckBox" Content="Case sensitive" Click="OnFindOptionChanged" />
                 <Button Content="Previous" Click="OnFindPreviousClick" />
                 <Button Content="Next" Click="OnFindNextClick" />
-                <TextBlock Name="FindStatusText" VerticalAlignment="Center" Foreground="DimGray" />
+                <TextBlock Name="FindStatusText" VerticalAlignment="Center" />
                 <Button Content="✕" Click="OnFindCloseClick" />
             </StackPanel>
         </Border>
