@@ -232,7 +232,7 @@ public class MainWindowLifecycleTests
                     TimeSpan.FromSeconds(5));
 
                 Assert.True(statusShowsColumnRange, $"expected a 'Col 1 / 11' range, got '{window.StatusPositionTextForTests}'");
-                Assert.StartsWith("Line 1 / 3, ", window.StatusPositionTextForTests);
+                Assert.StartsWith("Line 1 / 3  |  ", window.StatusPositionTextForTests);
             }
             finally
             {

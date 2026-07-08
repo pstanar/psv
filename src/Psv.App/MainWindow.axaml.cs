@@ -461,7 +461,7 @@ public partial class MainWindow : Window
         long totalLines = document.Index.KnownLineCount;
         long col = DocView.HorizontalOffset + 1;
         long maxCol = DocView.LastMaxLineLength;
-        StatusPositionText.Text = $"Line {line:N0} / {totalLines:N0}, Col {col:N0} / {maxCol:N0}";
+        StatusPositionText.Text = $"Line {line:N0} / {totalLines:N0}  |  Col {col:N0} / {maxCol:N0}";
     }
 
     private static string FormatFileSize(long bytes)
