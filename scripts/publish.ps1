@@ -3,7 +3,7 @@
 .SYNOPSIS
     Publishes Psv.App as a self-contained, single-file executable for one or all target RIDs.
 .PARAMETER Rid
-    Target runtime identifier: win-x64, linux-x64, osx-x64, osx-arm64, or 'all'.
+    Target runtime identifier: win-x64, linux-x64, osx-arm64, or 'all'.
 .PARAMETER Configuration
     Build configuration. Defaults to Release.
 .EXAMPLE
@@ -13,7 +13,7 @@
 #>
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('win-x64', 'linux-x64', 'osx-x64', 'osx-arm64', 'all')]
+    [ValidateSet('win-x64', 'linux-x64', 'osx-arm64', 'all')]
     [string]$Rid,
 
     [string]$Configuration = 'Release'
@@ -32,7 +32,7 @@ Write-Host "Version: $Version.$Build+$Sha"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot 'src/Psv.App/Psv.App.csproj'
-$allRids = @('win-x64', 'linux-x64', 'osx-x64', 'osx-arm64')
+$allRids = @('win-x64', 'linux-x64', 'osx-arm64')
 $targets = if ($Rid -eq 'all') { $allRids } else { @($Rid) }
 
 foreach ($targetRid in $targets) {
