@@ -116,4 +116,45 @@ public class CliArgsParserTests
         Assert.True(parsed.Tail);
         Assert.Equal("file.log", parsed.Path);
     }
+
+    [Fact]
+    public void BinFlagIsDisabledByDefault()
+    {
+        bool ok = CliArgsParser.TryParse(["file.log"], out var parsed, out _);
+
+        Assert.True(ok);
+        Assert.False(parsed.Bin);
+    }
+
+    [Fact]
+    public void BinFlagEnablesForcedHexViewRegardlessOfArgumentOrder()
+    {
+        bool ok = CliArgsParser.TryParse(["--bin", "file.exe"], out var parsed, out string? error);
+
+        Assert.True(ok);
+        Assert.Null(error);
+        Assert.Equal("file.exe", parsed.Path);
+        Assert.True(parsed.Bin);
+    }
+
+    [Fact]
+    public void BinFlagIsCaseInsensitive()
+    {
+        bool ok = CliArgsParser.TryParse(["--BIN", "file.exe"], out var parsed, out _);
+
+        Assert.True(ok);
+        Assert.True(parsed.Bin);
+    }
+
+    [Fact]
+    public void BinFlagCombinesWithEncodingAndTail()
+    {
+        bool ok = CliArgsParser.TryParse(["--encoding=utf-16le", "--tail", "--bin", "file.log"], out var parsed, out _);
+
+        Assert.True(ok);
+        Assert.Equal(TextEncodingKind.Utf16LE, parsed.Encoding);
+        Assert.True(parsed.Tail);
+        Assert.True(parsed.Bin);
+        Assert.Equal("file.log", parsed.Path);
+    }
 }

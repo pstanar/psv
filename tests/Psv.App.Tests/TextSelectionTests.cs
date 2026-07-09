@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Media;
 using Psv.Core;
@@ -103,11 +104,40 @@ public class TextSelectionTests
             var view = CreateView(document);
 
             // Columns [2, 5) from each of the three lines - the middle line is shorter than
-            // column 2, so it must contribute an empty string rather than throwing or wrapping.
+            // column 2, so it must contribute blank padding rather than throwing, wrapping, or
+            // (as a shape-breaking regression would) contributing a shorter/empty string.
             view.SetSelectionForTests(new DocumentPosition(0, 2), new DocumentPosition(2, 5), rectangular: true);
 
-            string expected = string.Join(Environment.NewLine, "cde", string.Empty, "cde");
+            string expected = string.Join(Environment.NewLine, "cde", "   ", "cde");
             Assert.Equal(expected, view.SelectedTextForTests);
+        }
+        finally
+        {
+            document.Dispose();
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
+    public void RectangularSelectionPadsEveryLineToTheFullSelectionWidthSoThePasteKeepsItsRectangleShape()
+    {
+        // Regression: a rectangular/block selection copy is only useful if pasting it elsewhere
+        // reproduces the same rectangle - a line shorter than the selection width used to
+        // contribute a shorter (or empty) string instead of being padded, which collapses that
+        // line's right edge and throws off every line pasted after it.
+        var document = OpenTempDocument("abcdefgh\na\nabcdef\n", out string path);
+        try
+        {
+            var view = CreateView(document);
+
+            // Columns [1, 6) - width 5 - from three lines, the middle only 1 character long.
+            view.SetSelectionForTests(new DocumentPosition(0, 1), new DocumentPosition(2, 6), rectangular: true);
+
+            string?[] lines = view.SelectedTextForTests?.Split(Environment.NewLine) ?? [];
+            Assert.All(lines, line => Assert.Equal(5, line!.Length));
+            Assert.Equal("bcdef", lines[0]);
+            Assert.Equal("     ", lines[1]);
+            Assert.Equal("bcdef", lines[2]);
         }
         finally
         {
@@ -426,6 +456,110 @@ public class TextSelectionTests
         }
         finally
         {
+            document.Dispose();
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
+    public void EndingARectangularDragReclaimsFocusEvenIfSomethingStoleItMidDrag()
+    {
+        // Regression: see HexView's identical test for the full rationale - a rectangular drag
+        // holds Alt for its whole duration, and releasing a "bare" Alt tap at the end can be read
+        // by Avalonia's own access-key/menu-mnemonic handling as a request to move keyboard focus
+        // to the menu bar, silently breaking Ctrl+C afterward even though the mouse never left
+        // this control.
+        var document = OpenTempDocument("line0\nline1\nline2\nline3\n", out string path);
+        Window? window = null;
+        try
+        {
+            var view = new DocumentView
+            {
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 14,
+                Document = document,
+                ShowLineNumbers = false,
+                ShowColumnRuler = false,
+                Width = 800,
+                Height = 300,
+            };
+            var focusThief = new Button { Content = "steal focus" };
+            var panel = new StackPanel();
+            panel.Children.Add(view);
+            panel.Children.Add(focusThief);
+
+            window = new Window { Content = panel };
+            window.Show();
+            window.CaptureRenderedFrame()?.Dispose();
+
+            // The view has an explicit Width/Height inside the StackPanel, so it isn't necessarily
+            // at the window's origin (it can end up centered) - translate view-local points into
+            // window coordinates rather than assuming the two coordinate spaces coincide.
+            var start = view.TranslatePoint(new Point(50, 20), window) ?? default;
+            var end = view.TranslatePoint(new Point(150, 60), window) ?? default;
+
+            window.MouseDown(start, MouseButton.Left, RawInputModifiers.Alt);
+            window.MouseMove(end, RawInputModifiers.Alt | RawInputModifiers.LeftMouseButton);
+
+            focusThief.Focus();
+            Assert.False(view.IsFocused, "test setup: the sibling must actually have stolen focus before the drag ends");
+            Assert.NotNull(view.SelectedTextForTests); // sanity check: the drag actually landed on the view
+
+            window.MouseUp(end, MouseButton.Left, RawInputModifiers.None);
+
+            Assert.True(view.IsFocused, "expected ending the rectangular drag to reclaim keyboard focus");
+        }
+        finally
+        {
+            window?.Close();
+            document.Dispose();
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
+    public void ReleasingAltAfterMouseUpReclaimsFocusEvenThoughOnPointerReleasedAlreadyRanOnce()
+    {
+        // Regression: see HexView's identical test for the full rationale - a real Alt+drag
+        // releases the mouse button before the user lets go of Alt, so OnPointerReleased's own
+        // focus fix runs first, then Avalonia's access-key/menu handling reacts to the later,
+        // separate Alt key-up and steals focus right back.
+        var document = OpenTempDocument("line0\nline1\nline2\nline3\n", out string path);
+        Window? window = null;
+        try
+        {
+            var view = new DocumentView
+            {
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 14,
+                Document = document,
+                ShowLineNumbers = false,
+                ShowColumnRuler = false,
+                Width = 800,
+                Height = 300,
+            };
+            var focusThief = new Button { Content = "steal focus" };
+            var panel = new StackPanel();
+            panel.Children.Add(view);
+            panel.Children.Add(focusThief);
+
+            window = new Window { Content = panel };
+            window.Show();
+            window.CaptureRenderedFrame()?.Dispose();
+
+            view.Focus();
+            Assert.True(view.IsFocused);
+
+            focusThief.Focus();
+            Assert.False(view.IsFocused, "test setup: focus must be stolen before simulating the Alt key-up");
+
+            view.SimulateAltKeyUpForTests();
+
+            Assert.True(view.IsFocused, "expected releasing Alt to reclaim keyboard focus a second time");
+        }
+        finally
+        {
+            window?.Close();
             document.Dispose();
             File.Delete(path);
         }

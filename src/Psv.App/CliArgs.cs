@@ -2,7 +2,7 @@ using Psv.Core;
 
 namespace Psv.App;
 
-public readonly record struct CliArgs(string? Path, TextEncodingKind? Encoding, bool Tail);
+public readonly record struct CliArgs(string? Path, TextEncodingKind? Encoding, bool Tail, bool Bin);
 
 public static class CliArgsParser
 {
@@ -11,6 +11,7 @@ public static class CliArgsParser
         string? path = null;
         TextEncodingKind? encoding = null;
         bool tail = false;
+        bool bin = false;
 
         foreach (string arg in args)
         {
@@ -30,13 +31,17 @@ public static class CliArgsParser
             {
                 tail = true;
             }
+            else if (string.Equals(arg, "--bin", StringComparison.OrdinalIgnoreCase))
+            {
+                bin = true;
+            }
             else if (!arg.StartsWith("--", StringComparison.Ordinal))
             {
                 path ??= arg;
             }
         }
 
-        parsed = new CliArgs(path, encoding, tail);
+        parsed = new CliArgs(path, encoding, tail, bin);
         error = null;
         return true;
     }

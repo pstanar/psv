@@ -10,8 +10,6 @@ using Psv.Core;
 
 namespace Psv.App;
 
-internal readonly record struct DocumentPalette(Color Text, Color ZebraEven, Color ZebraOdd);
-
 /// <summary>A (line, character-column) location within the document, in absolute (unscrolled) coordinates.</summary>
 internal readonly record struct DocumentPosition(long Line, int Column) : IComparable<DocumentPosition>
 {
@@ -98,28 +96,8 @@ public sealed class DocumentView : Control
         "JetBrains Mono", "Courier New", "DejaVu Sans Mono", "Menlo", "Liberation Mono",
     ];
 
-    private static readonly DocumentPalette LightPalette = new(
-        Text: Colors.Black,
-        ZebraEven: Colors.White,
-        ZebraOdd: Color.FromRgb(0xF0, 0xF0, 0xF0));
-
-    private static readonly DocumentPalette DarkPalette = new(
-        Text: Color.FromRgb(0xE0, 0xE0, 0xE0),
-        ZebraEven: Color.FromRgb(0x1E, 0x1E, 0x1E),
-        ZebraOdd: Color.FromRgb(0x25, 0x25, 0x26));
-
     private static readonly Color MatchHighlightColor = Color.FromArgb(140, 255, 165, 0);
     private static readonly IBrush HighlightBrush = new SolidColorBrush(MatchHighlightColor);
-
-    private static readonly Color LightGutterBackground = Color.FromRgb(0xE8, 0xE8, 0xE8);
-    private static readonly Color DarkGutterBackground = Color.FromRgb(0x2D, 0x2D, 0x2D);
-    private static readonly Color GutterTextGray = Color.FromRgb(0x80, 0x80, 0x80);
-
-    // Rec. 601 luma coefficients, used to pick a light or dark gutter to match the zebra base color.
-    private const double LumaRed = 0.299;
-    private const double LumaGreen = 0.587;
-    private const double LumaBlue = 0.114;
-    private const double GutterLuminanceThreshold = 0.5;
 
     private const double LinePadding = 2;
     private const double GutterPadding = 6;
@@ -417,22 +395,15 @@ public sealed class DocumentView : Control
         return (palette.Text, palette.ZebraEven, palette.ZebraOdd);
     }
 
-    private DocumentPalette GetEffectivePalette()
+    private ViewPalette GetEffectivePalette()
     {
         if (!FollowSystemTheme)
         {
-            return new DocumentPalette(TextColor, ZebraEvenColor, ZebraOddColor);
+            return new ViewPalette(TextColor, ZebraEvenColor, ZebraOddColor);
         }
 
         bool isDark = Application.Current?.ActualThemeVariant == ThemeVariant.Dark;
-        return isDark ? DarkPalette : LightPalette;
-    }
-
-    private static (Color Background, Color Text) GetGutterColors(Color zebraEvenColor)
-    {
-        double luminance = ((LumaRed * zebraEvenColor.R) + (LumaGreen * zebraEvenColor.G) + (LumaBlue * zebraEvenColor.B)) / 255.0;
-        Color background = luminance > GutterLuminanceThreshold ? LightGutterBackground : DarkGutterBackground;
-        return (background, GutterTextGray);
+        return isDark ? ViewPalettes.Dark : ViewPalettes.Light;
     }
 
     private void RefreshRenderResources()
@@ -440,7 +411,7 @@ public sealed class DocumentView : Control
         _typeface = new Typeface(FontFamily);
 
         var palette = GetEffectivePalette();
-        var (gutterBackground, gutterText) = GetGutterColors(palette.ZebraEven);
+        var (gutterBackground, gutterText) = ViewPalettes.GetGutterColors(palette.ZebraEven);
         _textBrush = new SolidColorBrush(palette.Text);
         _evenRowBrush = new SolidColorBrush(palette.ZebraEven);
         _oddRowBrush = new SolidColorBrush(palette.ZebraOdd);
@@ -710,6 +681,12 @@ public sealed class DocumentView : Control
             _isSelecting = false;
             StopAutoScroll();
             e.Pointer.Capture(null);
+
+            // See HexView.OnPointerReleased for the full rationale: a rectangular drag releases
+            // Alt at the end of the gesture, which Avalonia's own access-key/menu-mnemonic
+            // handling can read as a "bare Alt tap" and silently move keyboard focus to the menu
+            // bar. Re-asserting focus here repairs that without affecting the non-rectangular case.
+            Focus();
         }
     }
 
@@ -844,6 +821,7 @@ public sealed class DocumentView : Control
             long maxLine = Math.Max(anchor.Line, focus.Line);
             int minColumn = Math.Min(anchor.Column, focus.Column);
             int maxColumn = Math.Max(anchor.Column, focus.Column);
+            int width = maxColumn - minColumn;
 
             var ranges = document.Locator.GetLineRanges(minLine, (int)(maxLine - minLine + 1));
             var lines = new string[ranges.Count];
@@ -852,7 +830,13 @@ public sealed class DocumentView : Control
                 string text = document.Locator.DecodeLine(ranges[i]);
                 int start = Math.Min(minColumn, text.Length);
                 int end = Math.Min(maxColumn, text.Length);
-                lines[i] = end > start ? text[start..end] : string.Empty;
+                string extracted = end > start ? text[start..end] : string.Empty;
+
+                // Padded to the full selection width rather than left at whatever a short line
+                // actually had - otherwise pasting the block elsewhere collapses its right edge on
+                // every line shorter than the selection, destroying the rectangle shape that's the
+                // entire point of a block selection.
+                lines[i] = extracted.PadRight(width);
             }
 
             return string.Join(Environment.NewLine, lines);
@@ -958,6 +942,19 @@ public sealed class DocumentView : Control
     internal double CharWidthForTests => _charWidth;
 
     internal double GutterPaddingForTests => GutterPadding;
+
+    internal void SimulateAltKeyUpForTests() => OnKeyUp(new KeyEventArgs { Key = Key.LeftAlt });
+
+    /// <summary>See HexView.OnKeyUp for the full rationale - this undoes Avalonia's own access-key/menu-mnemonic handling silently stealing focus when Alt is released at the end of a rectangular drag.</summary>
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+
+        if (e.Key is Key.LeftAlt or Key.RightAlt)
+        {
+            Focus();
+        }
+    }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {

@@ -184,6 +184,44 @@ public class PsvDocumentTailingTests
     }
 
     [Fact]
+    public async Task TailingInBinaryModeGrowsFileSizeWithoutTouchingTheLineIndex()
+    {
+        // Real PE header prefix - decisive as binary via its embedded NUL bytes.
+        byte[] header = [0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00];
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, header);
+
+            using var doc = PsvDocument.Open(path);
+            Assert.True(doc.IsBinary);
+            Assert.Equal(header.Length, doc.FileSizeBytes);
+
+            doc.StartTailing(TimeSpan.FromMilliseconds(100));
+            try
+            {
+                using (var append = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    append.Write([0x01, 0x02, 0x03, 0x04]);
+                }
+
+                bool grew = await WaitUntilAsync(() => doc.FileSizeBytes == header.Length + 4, TimeSpan.FromSeconds(5));
+                Assert.True(grew, $"expected {header.Length + 4} bytes, got {doc.FileSizeBytes}");
+                Assert.Equal(0, doc.Index.KnownLineCount);
+                Assert.False(doc.Index.IsComplete);
+            }
+            finally
+            {
+                doc.StopTailing();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void StartTailingAfterDisposeIsANoOp()
     {
         // Regression test: an async index-build continuation calling StartTailing() can race

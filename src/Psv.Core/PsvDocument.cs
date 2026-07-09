@@ -32,13 +32,14 @@ public sealed class PsvDocument : IDisposable
     private volatile bool _pendingReplace;
     private volatile bool _disposed;
 
-    private PsvDocument(string path, MappedFileByteSource source, TextEncodingKind encoding, int bomLength, bool isManualEncoding)
+    private PsvDocument(string path, MappedFileByteSource source, TextEncodingKind encoding, int bomLength, bool isManualEncoding, bool isBinary)
     {
         _path = path;
         _source = source;
         Encoding = encoding;
         BomLength = bomLength;
         IsManualEncoding = isManualEncoding;
+        IsBinary = isBinary;
         Index = new LineIndex();
         Locator = new LineLocator(Index, source, encoding);
         _builder = new LineIndexBuilder(source, encoding, bomLength);
@@ -51,7 +52,19 @@ public sealed class PsvDocument : IDisposable
     /// <summary>True if the encoding was forced (CLI flag or the cycle keybinding) rather than auto-detected.</summary>
     public bool IsManualEncoding { get; private set; }
 
+    /// <summary>
+    /// True if the file is being viewed as binary/hex rather than text - either detected from its
+    /// leading bytes (<see cref="BinaryContentDetector"/>) or forced via the <c>--bin</c> CLI flag
+    /// or the Ctrl+B view-mode toggle. <see cref="Index"/>/<see cref="Locator"/> are never built for
+    /// a binary document (see <see cref="BuildIndex"/>) - hex rendering reads <see cref="ByteSource"/>
+    /// directly instead, since a fixed-width byte grid needs no line-boundary scanning at all.
+    /// </summary>
+    public bool IsBinary { get; private set; }
+
     public long FileSizeBytes => _source.Length;
+
+    /// <summary>Direct byte access for hex-mode rendering - bypasses the line-index machinery entirely.</summary>
+    public IByteSource ByteSource => _source;
 
     public LineIndex Index { get; }
 
@@ -59,18 +72,20 @@ public sealed class PsvDocument : IDisposable
 
     internal bool HasReindexCtsForTests => _reindexCts is not null;
 
-    public static PsvDocument Open(string path, TextEncodingKind? forcedEncoding = null)
+    public static PsvDocument Open(string path, TextEncodingKind? forcedEncoding = null, bool? forceBinary = null)
     {
         var source = new MappedFileByteSource(path);
         try
         {
             TextEncodingKind encoding;
             int bomLength;
+            bool isBinary;
 
             if (forcedEncoding is { } forced)
             {
                 encoding = forced;
                 bomLength = 0;
+                isBinary = forceBinary ?? false;
             }
             else
             {
@@ -80,9 +95,14 @@ public sealed class PsvDocument : IDisposable
                 var detection = EncodingDetector.Detect(header.AsSpan(0, read), sampleIsEntireFile);
                 encoding = detection.Kind;
                 bomLength = detection.BomLength;
+
+                // A matched BOM is decisive proof of UTF-16 text - a legitimate UTF-16 file is
+                // dense with 0x00 bytes by construction and must never be misclassified as binary
+                // from that alone, so the sniff only runs when no BOM was found.
+                isBinary = forceBinary ?? (bomLength == 0 && BinaryContentDetector.LooksBinary(header.AsSpan(0, read)));
             }
 
-            return new PsvDocument(path, source, encoding, bomLength, isManualEncoding: forcedEncoding is not null);
+            return new PsvDocument(path, source, encoding, bomLength, isManualEncoding: forcedEncoding is not null, isBinary);
         }
         catch
         {
@@ -91,10 +111,18 @@ public sealed class PsvDocument : IDisposable
         }
     }
 
-    public void BuildIndex(CancellationToken cancellationToken = default) => _builder.Build(Index, cancellationToken);
+    /// <summary>No-op for a binary document - see <see cref="IsBinary"/>.</summary>
+    public void BuildIndex(CancellationToken cancellationToken = default)
+    {
+        if (!IsBinary)
+        {
+            _builder.Build(Index, cancellationToken);
+        }
+    }
 
+    /// <summary>Already-completed for a binary document - see <see cref="IsBinary"/>.</summary>
     public Task BuildIndexAsync(CancellationToken cancellationToken = default) =>
-        Task.Run(() => _builder.Build(Index, cancellationToken), cancellationToken);
+        IsBinary ? Task.CompletedTask : Task.Run(() => _builder.Build(Index, cancellationToken), cancellationToken);
 
     /// <summary>
     /// Switches to a manually-chosen encoding (plan §2.2.1 cycle keybinding / CLI flag). Switching
@@ -238,13 +266,19 @@ public sealed class PsvDocument : IDisposable
                         if (replace)
                         {
                             _source.Reopen();
-                            Index.Reset();
-                            _builder.Build(Index);
+                            if (!IsBinary)
+                            {
+                                Index.Reset();
+                                _builder.Build(Index);
+                            }
                         }
                         else
                         {
                             _source.Remap();
-                            _builder.Continue(Index);
+                            if (!IsBinary)
+                            {
+                                _builder.Continue(Index);
+                            }
                         }
                     }
                     catch (IOException)

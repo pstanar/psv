@@ -146,6 +146,77 @@ public class PsvDocumentTests
         }
     }
 
+    [Fact]
+    public void OpenDetectsBinaryContentAndSkipsIndexBuild()
+    {
+        // Real PE header prefix - decisive via its embedded NUL bytes.
+        byte[] content = [0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00];
+        string path = WriteTempFile(content);
+        try
+        {
+            using var doc = PsvDocument.Open(path);
+            Assert.True(doc.IsBinary);
+
+            doc.BuildIndex();
+            Assert.Equal(0, doc.Index.KnownLineCount);
+            Assert.False(doc.Index.IsComplete);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ForceBinaryOverridesDetectionForATextFile()
+    {
+        string path = WriteTempFile("line1\nline2\n"u8.ToArray());
+        try
+        {
+            using var doc = PsvDocument.Open(path, forceBinary: true);
+            Assert.True(doc.IsBinary);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ForceTextOverridesDetectionForABinaryFile()
+    {
+        byte[] content = [0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00];
+        string path = WriteTempFile(content);
+        try
+        {
+            using var doc = PsvDocument.Open(path, forceBinary: false);
+            Assert.False(doc.IsBinary);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ByteSourceExposesRawContentRegardlessOfMode()
+    {
+        byte[] content = [0x4D, 0x5A, 0x90, 0x00];
+        string path = WriteTempFile(content);
+        try
+        {
+            using var doc = PsvDocument.Open(path);
+            byte[] buffer = new byte[content.Length];
+            int read = doc.ByteSource.Read(0, buffer);
+            Assert.Equal(content.Length, read);
+            Assert.Equal(content, buffer);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string WriteTempFile(byte[] content)
     {
         string path = Path.GetTempFileName();

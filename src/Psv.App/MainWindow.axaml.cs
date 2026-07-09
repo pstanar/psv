@@ -27,6 +27,7 @@ public partial class MainWindow : Window
     private bool _syncingScroll;
     private long _lastMaxTop;
     private long _lastKnownLineCount = -1;
+    private long _lastKnownByteLength = -1;
     private bool _initialIndexSeen;
 
     private DocumentSearcher? _searcher;
@@ -52,6 +53,21 @@ public partial class MainWindow : Window
         ZebraStripingMenuItem.IsChecked = DocView.ZebraStriping;
         LiveTailMenuItem.IsChecked = _tailingEnabled;
         UpdateHScrollBarState();
+
+        HexV.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == HexView.TopLineProperty)
+            {
+                if (!_syncingScroll)
+                {
+                    _syncingScroll = true;
+                    VScrollBar.Value = HexV.TopLine;
+                    _syncingScroll = false;
+                }
+
+                UpdatePositionStatus();
+            }
+        };
 
         PositionChanged += (_, e) =>
         {
@@ -122,7 +138,15 @@ public partial class MainWindow : Window
             }
 
             _syncingScroll = true;
-            DocView.TopLine = (long)e.NewValue;
+            if (_document is { IsBinary: true })
+            {
+                HexV.TopLine = (long)e.NewValue;
+            }
+            else
+            {
+                DocView.TopLine = (long)e.NewValue;
+            }
+
             _syncingScroll = false;
         };
 
@@ -183,6 +207,17 @@ public partial class MainWindow : Window
         DocView.TextColor = ParseColorOrDefault(settings.TextColor, Colors.Black);
         DocView.ZebraEvenColor = ParseColorOrDefault(settings.ZebraEvenColor, Colors.White);
         DocView.ZebraOddColor = ParseColorOrDefault(settings.ZebraOddColor, Color.FromRgb(0xF0, 0xF0, 0xF0));
+
+        // HexView has no dedicated appearance settings of its own - it mirrors DocView's font,
+        // color, and zebra-striping settings so the two views look consistent regardless of which
+        // one a given file happens to open in.
+        HexV.ZebraStriping = settings.ZebraStriping;
+        HexV.FollowSystemTheme = settings.FollowSystemTheme;
+        HexV.FontFamily = new FontFamily(settings.FontFamily);
+        HexV.FontSize = settings.FontSize;
+        HexV.TextColor = ParseColorOrDefault(settings.TextColor, Colors.Black);
+        HexV.ZebraEvenColor = ParseColorOrDefault(settings.ZebraEvenColor, Colors.White);
+        HexV.ZebraOddColor = ParseColorOrDefault(settings.ZebraOddColor, Color.FromRgb(0xF0, 0xF0, 0xF0));
 
         if (settings.WindowMaximized)
         {
@@ -262,12 +297,35 @@ public partial class MainWindow : Window
 
     internal long TopLineForTests => DocView.TopLine;
 
+    internal long HexTopLineForTests => HexV.TopLine;
+
+    internal bool IsHexViewActiveForTests => HexV.IsVisible;
+
+    internal bool IsHexViewMenuCheckedForTests => HexViewMenuItem.IsChecked;
+
+    internal bool IsFindMenuEnabledForTests => FindMenuItem.IsEnabled;
+
+    internal bool IsGoToLineMenuEnabledForTests => GoToLineMenuItem.IsEnabled;
+
+    internal bool IsCycleEncodingMenuEnabledForTests => CycleEncodingMenuItem.IsEnabled;
+
+    internal void ToggleHexViewForTests() => OnToggleHexView(this, new RoutedEventArgs());
+
+    internal HexView HexViewForTests => HexV;
+
+    internal DocumentView DocumentViewForTests => DocView;
+
     /// <param name="enableTailing">
     /// Overrides the current live-tail setting for this open (e.g. the CLI --tail switch) - null
     /// leaves whatever the user/settings already have it set to untouched. Updates the View menu
     /// checkbox either way, since it must always reflect whether tailing is actually going to run.
     /// </param>
-    public void OpenFile(string path, TextEncodingKind? forcedEncoding = null, bool? enableTailing = null)
+    /// <param name="forceBinary">
+    /// Forces binary/hex or text mode rather than auto-detecting from the file's leading bytes
+    /// (the <c>--bin</c> CLI flag or the Ctrl+B view-mode toggle, which reopens the file with the
+    /// opposite of its current <see cref="PsvDocument.IsBinary"/>). Null lets detection decide.
+    /// </param>
+    public void OpenFile(string path, TextEncodingKind? forcedEncoding = null, bool? enableTailing = null, bool? forceBinary = null)
     {
         if (enableTailing is { } tail)
         {
@@ -281,7 +339,7 @@ public partial class MainWindow : Window
             // Opened before touching any current-document state: if this throws (missing file,
             // access denied, bad path from a CLI arg), the existing view/tailing must be left
             // completely alone rather than torn down for a file that never actually opened.
-            document = PsvDocument.Open(path, forcedEncoding);
+            document = PsvDocument.Open(path, forcedEncoding, forceBinary);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
@@ -299,13 +357,21 @@ public partial class MainWindow : Window
 
         _document = document;
         _currentFilePath = path;
-        DocView.Document = document;
+
+        // Must run before resetting TopLine below: it's what points DocView/HexV at the new
+        // document in the first place. The old document was just disposed above - a TopLine reset
+        // against a view still pointing at it wouldn't just show stale content, it would throw the
+        // instant HexView.MaxTopLine() touches the disposed MappedFileByteSource's ReaderWriterLockSlim.
+        ApplyViewMode();
+
         DocView.TopLine = 0;
         DocView.HorizontalOffset = 0;
+        HexV.TopLine = 0;
         VScrollBar.Value = 0;
         HScrollBar.Value = 0;
         _lastMaxTop = 0;
         _lastKnownLineCount = -1;
+        _lastKnownByteLength = -1;
         _initialIndexSeen = false;
 
         StatusPathText.Text = path;
@@ -313,7 +379,7 @@ public partial class MainWindow : Window
         StatusEncodingText.Text = string.Empty;
         StatusLineEndingText.Text = string.Empty;
         StatusPositionText.Text = string.Empty;
-        StatusStateText.Text = "Indexing...";
+        StatusStateText.Text = document.IsBinary ? "Ready" : "Indexing...";
 
         var cts = new CancellationTokenSource();
         _indexCts = cts;
@@ -342,7 +408,14 @@ public partial class MainWindow : Window
                         {
                             if (ReferenceEquals(_document, document))
                             {
-                                DocView.TopLine = long.MaxValue;
+                                if (document.IsBinary)
+                                {
+                                    HexV.TopLine = long.MaxValue;
+                                }
+                                else
+                                {
+                                    DocView.TopLine = long.MaxValue;
+                                }
                             }
                         });
                     }
@@ -390,46 +463,86 @@ public partial class MainWindow : Window
             return;
         }
 
-        long known = document.Index.KnownLineCount;
+        bool wasFollowing;
 
-        // Nothing changed since the last tick (common once a static file finishes indexing, or
-        // between growth bursts on a tailed file) — skip all UI work, not just the redraw. Gate
-        // on the actual line count, not maxTop: a file small enough to never need scrolling keeps
-        // maxTop at 0 both before and after new lines arrive, which would otherwise mask growth.
-        if (known == _lastKnownLineCount && document.Index.IsComplete)
+        if (document.IsBinary)
         {
-            return;
-        }
+            long length = document.FileSizeBytes;
 
-        // FullyVisibleLineCount, not VisibleLineCount: must match DocView's own MaxTopLine() so
-        // the scrollbar's Maximum never lets the user drag past the point where DocView clamps
-        // TopLine itself, which would otherwise snap back visually on every such drag.
-        long newMaxTop = Math.Max(0, known - DocView.FullyVisibleLineCount);
+            // Nothing changed since the last tick - same early-out as text mode below, just keyed
+            // on byte length instead of line count since there's no index to be "complete".
+            if (length == _lastKnownByteLength)
+            {
+                return;
+            }
 
-        // Only apply follow-mode auto-scroll once the initial index build has completed at least
-        // once. Without this, the very first tick after opening a file has TopLine == 0 and
-        // _lastMaxTop == 0 — trivially "at the bottom" by the >= check — which would snap a
-        // freshly-opened file straight to its end instead of leaving it at the top.
-        bool wasFollowing = _initialIndexSeen && DocView.TopLine >= _lastMaxTop;
+            long totalRows = (length + HexView.BytesPerRow - 1) / HexView.BytesPerRow;
+            long newMaxTop = Math.Max(0, totalRows - HexV.FullyVisibleRowCount);
 
-        DocView.InvalidateVisual();
+            // Same _initialIndexSeen guard as text mode, evaluated before it's set below - without
+            // it, the very first tick's TopLine == 0 and _lastMaxTop == 0 would trivially satisfy
+            // ">=" and snap a freshly-opened file straight to its end.
+            wasFollowing = _initialIndexSeen && HexV.TopLine >= _lastMaxTop;
 
-        _syncingScroll = true;
-        VScrollBar.Maximum = newMaxTop;
-        VScrollBar.IsVisible = newMaxTop > 0;
-        if (wasFollowing)
-        {
-            DocView.TopLine = newMaxTop;
-            VScrollBar.Value = newMaxTop;
-        }
-        _syncingScroll = false;
+            HexV.InvalidateVisual();
 
-        _lastMaxTop = newMaxTop;
-        _lastKnownLineCount = known;
+            _syncingScroll = true;
+            VScrollBar.Maximum = newMaxTop;
+            VScrollBar.IsVisible = newMaxTop > 0;
+            if (wasFollowing)
+            {
+                HexV.TopLine = newMaxTop;
+                VScrollBar.Value = newMaxTop;
+            }
+            _syncingScroll = false;
 
-        if (document.Index.IsComplete)
-        {
+            _lastMaxTop = newMaxTop;
+            _lastKnownByteLength = length;
             _initialIndexSeen = true;
+        }
+        else
+        {
+            long known = document.Index.KnownLineCount;
+
+            // Nothing changed since the last tick (common once a static file finishes indexing, or
+            // between growth bursts on a tailed file) — skip all UI work, not just the redraw. Gate
+            // on the actual line count, not maxTop: a file small enough to never need scrolling keeps
+            // maxTop at 0 both before and after new lines arrive, which would otherwise mask growth.
+            if (known == _lastKnownLineCount && document.Index.IsComplete)
+            {
+                return;
+            }
+
+            // FullyVisibleLineCount, not VisibleLineCount: must match DocView's own MaxTopLine() so
+            // the scrollbar's Maximum never lets the user drag past the point where DocView clamps
+            // TopLine itself, which would otherwise snap back visually on every such drag.
+            long newMaxTop = Math.Max(0, known - DocView.FullyVisibleLineCount);
+
+            // Only apply follow-mode auto-scroll once the initial index build has completed at least
+            // once. Without this, the very first tick after opening a file has TopLine == 0 and
+            // _lastMaxTop == 0 — trivially "at the bottom" by the >= check — which would snap a
+            // freshly-opened file straight to its end instead of leaving it at the top.
+            wasFollowing = _initialIndexSeen && DocView.TopLine >= _lastMaxTop;
+
+            DocView.InvalidateVisual();
+
+            _syncingScroll = true;
+            VScrollBar.Maximum = newMaxTop;
+            VScrollBar.IsVisible = newMaxTop > 0;
+            if (wasFollowing)
+            {
+                DocView.TopLine = newMaxTop;
+                VScrollBar.Value = newMaxTop;
+            }
+            _syncingScroll = false;
+
+            _lastMaxTop = newMaxTop;
+            _lastKnownLineCount = known;
+
+            if (document.Index.IsComplete)
+            {
+                _initialIndexSeen = true;
+            }
         }
 
         UpdateStatusBar(wasFollowing);
@@ -447,22 +560,27 @@ public partial class MainWindow : Window
         StatusPathText.Text = path;
         StatusSizeText.Text = FormatFileSize(document.FileSizeBytes);
 
-        string encodingName = EncodingNames.ToDisplayName(document.Encoding);
-        StatusEncodingText.Text = document.IsManualEncoding ? $"{encodingName} (manual)" : $"{encodingName} (auto)";
-
-        StatusLineEndingText.Text = document.Index.DominantLineEnding switch
+        if (!document.IsBinary)
         {
-            LineEndingKind.Lf => "LF",
-            LineEndingKind.Cr => "CR",
-            LineEndingKind.CrLf => "CRLF",
-            _ => "—",
-        };
+            string encodingName = EncodingNames.ToDisplayName(document.Encoding);
+            StatusEncodingText.Text = document.IsManualEncoding ? $"{encodingName} (manual)" : $"{encodingName} (auto)";
+
+            StatusLineEndingText.Text = document.Index.DominantLineEnding switch
+            {
+                LineEndingKind.Lf => "LF",
+                LineEndingKind.Cr => "CR",
+                LineEndingKind.CrLf => "CRLF",
+                _ => "—",
+            };
+        }
 
         UpdatePositionStatus();
 
-        StatusStateText.Text = !document.Index.IsComplete
-            ? $"Indexing... {document.Index.KnownLineCount:N0} lines so far"
-            : isFollowing ? "Following" : "Ready";
+        StatusStateText.Text = document.IsBinary
+            ? (isFollowing ? "Following" : "Ready")
+            : !document.Index.IsComplete
+                ? $"Indexing... {document.Index.KnownLineCount:N0} lines so far"
+                : isFollowing ? "Following" : "Ready";
     }
 
     private void UpdatePositionStatus()
@@ -470,6 +588,13 @@ public partial class MainWindow : Window
         if (_document is not { } document)
         {
             StatusPositionText.Text = string.Empty;
+            return;
+        }
+
+        if (document.IsBinary)
+        {
+            long topOffset = HexV.TopLine * HexView.BytesPerRow;
+            StatusPositionText.Text = $"Offset 0x{topOffset:X8}  |  {document.FileSizeBytes:N0} bytes";
             return;
         }
 
@@ -500,7 +625,7 @@ public partial class MainWindow : Window
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "Open Text File",
+            Title = "Open File",
             AllowMultiple = false,
         });
 
@@ -518,11 +643,63 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Reload keeps whatever the current file is doing right now, manual or not - the same
+        // encoding it's showing, and the same text/hex view mode, rather than re-running
+        // auto-detection and risking a surprise flip the user didn't ask for.
         TextEncodingKind? forcedEncoding = _document is { IsManualEncoding: true } document ? document.Encoding : null;
-        OpenFile(path, forcedEncoding);
+        OpenFile(path, forcedEncoding, forceBinary: _document?.IsBinary);
     }
 
-    private void OnEditCopyClick(object? sender, RoutedEventArgs e) => _ = DocView.CopySelectionToClipboardAsync();
+    private void OnEditCopyClick(object? sender, RoutedEventArgs e) =>
+        _ = _document is { IsBinary: true } ? HexV.CopySelectionToClipboardAsync() : DocView.CopySelectionToClipboardAsync();
+
+    private void OnToggleHexView(object? sender, RoutedEventArgs e)
+    {
+        if (_document is not { } document || _currentFilePath is not { } path)
+        {
+            return;
+        }
+
+        TextEncodingKind? forcedEncoding = document.IsManualEncoding ? document.Encoding : null;
+
+        // A full reopen, not an in-place flip: DocView's line index and HexV's raw byte access
+        // are mutually exclusive on a single PsvDocument (see PsvDocument.IsBinary), so there's no
+        // "hybrid" document with both live at once to swap views on top of. Reopening is cheap
+        // regardless of file size (memory-mapped), at the cost of resetting scroll position -
+        // matching how reference hex editors behave switching modes on a file.
+        OpenFile(path, forcedEncoding, enableTailing: null, forceBinary: !document.IsBinary);
+    }
+
+    /// <summary>Shows/hides DocView vs. HexV to match the current document's mode, and disables menu items that don't apply to hex-viewed content.</summary>
+    private void ApplyViewMode()
+    {
+        bool hex = _document is { IsBinary: true };
+
+        DocView.IsVisible = !hex;
+        HexV.IsVisible = hex;
+        DocView.Document = hex ? null : _document;
+        HexV.Document = hex ? _document : null;
+        HexViewMenuItem.IsChecked = hex;
+
+        StatusEncodingText.IsVisible = !hex;
+        StatusLineEndingText.IsVisible = !hex;
+
+        // Find, Go To Line, and Cycle Encoding all operate on the line index / text search
+        // machinery, which a binary document never builds (see PsvDocument.IsBinary) - disabled
+        // rather than silently doing nothing when clicked.
+        FindMenuItem.IsEnabled = !hex;
+        GoToLineMenuItem.IsEnabled = !hex;
+        CycleEncodingMenuItem.IsEnabled = !hex;
+
+        if (hex)
+        {
+            HScrollBar.IsVisible = false;
+        }
+        else
+        {
+            UpdateHScrollBarState();
+        }
+    }
 
     private void OnToggleLineNumbers(object? sender, RoutedEventArgs e)
     {
@@ -544,6 +721,7 @@ public partial class MainWindow : Window
     private void OnToggleZebraStriping(object? sender, RoutedEventArgs e)
     {
         DocView.ZebraStriping = ZebraStripingMenuItem.IsChecked;
+        HexV.ZebraStriping = ZebraStripingMenuItem.IsChecked;
     }
 
     private void OnToggleLiveTail(object? sender, RoutedEventArgs e)
@@ -573,10 +751,19 @@ public partial class MainWindow : Window
 
         if (_tailingEnabled)
         {
-            if (document.Index.IsComplete)
+            // A binary document never builds a line index (see PsvDocument.IsBinary), so there's
+            // no Build()-vs-Continue() race to wait out - tailing can start immediately.
+            if (document.IsBinary || document.Index.IsComplete)
             {
                 document.StartTailing();
-                DocView.TopLine = long.MaxValue;
+                if (document.IsBinary)
+                {
+                    HexV.TopLine = long.MaxValue;
+                }
+                else
+                {
+                    DocView.TopLine = long.MaxValue;
+                }
             }
         }
         else
@@ -595,12 +782,23 @@ public partial class MainWindow : Window
         if (dialog.Applied)
         {
             dialog.ApplyTo(DocView);
+
+            // HexView has no dedicated appearance settings of its own - see ApplySettings.
+            HexV.FontFamily = DocView.FontFamily;
+            HexV.FontSize = DocView.FontSize;
+            HexV.FollowSystemTheme = DocView.FollowSystemTheme;
+            HexV.TextColor = DocView.TextColor;
+            HexV.ZebraEvenColor = DocView.ZebraEvenColor;
+            HexV.ZebraOddColor = DocView.ZebraOddColor;
         }
     }
 
     private void UpdateHScrollBarState()
     {
-        if (DocView.WordWrap)
+        // Hex view rows are always exactly HexView.BytesPerRow bytes wide, so there's no
+        // analogous "line longer than the viewport" concept - ApplyViewMode forces the horizontal
+        // scrollbar off outright whenever hex mode is active, before this can run.
+        if (_document is { IsBinary: true } || DocView.WordWrap)
         {
             HScrollBar.IsVisible = false;
             return;
@@ -620,7 +818,10 @@ public partial class MainWindow : Window
 
     private async Task ShowGoToLineDialogAsync()
     {
-        if (_document is not { } document)
+        // Go To Line operates on the line index, which a binary document never builds (see
+        // PsvDocument.IsBinary) - disabled in the menu too (ApplyViewMode), this guard covers the
+        // Ctrl+G keybinding, which bypasses the menu item's IsEnabled entirely.
+        if (_document is not { IsBinary: false } document)
         {
             return;
         }
@@ -640,7 +841,7 @@ public partial class MainWindow : Window
     private void OnCycleEncodingClick(object? sender, RoutedEventArgs e) => _ = CycleEncodingAsync();
 
     private Task CycleEncodingAsync() =>
-        _document is { } document ? ApplyEncodingAsync(EncodingNames.Next(document.Encoding)) : Task.CompletedTask;
+        _document is { IsBinary: false } document ? ApplyEncodingAsync(EncodingNames.Next(document.Encoding)) : Task.CompletedTask;
 
     /// <summary>Exercises exactly what a flyout MenuItem's Click handler does, without needing to drive the popup itself.</summary>
     internal Task SelectEncodingForTests(TextEncodingKind kind) => ApplyEncodingAsync(kind);
@@ -703,6 +904,24 @@ public partial class MainWindow : Window
         UpdateStatusBar(isFollowing: false);
     }
 
+    /// <summary>
+    /// DocView/HexView's own OnKeyUp already reclaims keyboard focus after Avalonia's access-key
+    /// handler steals it on Alt release (see their OnKeyUp for the full rationale), but that
+    /// handler's visual side effect - leaving the File menu looking "selected" - is separate
+    /// Menu-internal state (MenuBase.SelectedIndex) that reclaiming focus alone doesn't reset.
+    /// Clearing it here, at the window level, cleans up the visual artifact left behind by a
+    /// rectangular drag's Alt release.
+    /// </summary>
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+
+        if (e.Key is Key.LeftAlt or Key.RightAlt)
+        {
+            MainMenu.SelectedIndex = -1;
+        }
+    }
+
     // --- Search (plan §2.6 / milestone 6) ---
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -722,6 +941,14 @@ public partial class MainWindow : Window
         else if (e.Key == Key.E && e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift))
         {
             _ = CycleEncodingAsync();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.B && e.KeyModifiers == KeyModifiers.Control)
+        {
+            // Unlike the checkbox-style toggles above, OnToggleHexView derives its target state
+            // from the document itself (IsBinary), not from HexViewMenuItem.IsChecked - the menu
+            // checkbox just reflects whatever ApplyViewMode decides after the reopen completes.
+            OnToggleHexView(this, new RoutedEventArgs());
             e.Handled = true;
         }
         else if (e.Key == Key.F2)
@@ -776,6 +1003,14 @@ public partial class MainWindow : Window
 
     private void OpenFindBar()
     {
+        // Find operates on DocumentSearcher/the line index, which a binary document never builds
+        // (see PsvDocument.IsBinary) - disabled in the menu too (ApplyViewMode), this guard covers
+        // the Ctrl+F keybinding, which bypasses the menu item's IsEnabled entirely.
+        if (_document is { IsBinary: true })
+        {
+            return;
+        }
+
         FindBar.IsVisible = true;
         FindTextBox.SelectAll();
         FindTextBox.Focus();

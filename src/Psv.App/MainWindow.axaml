@@ -9,7 +9,7 @@
         Title="psv"
         Width="900" Height="600">
     <DockPanel>
-        <Menu DockPanel.Dock="Top">
+        <Menu DockPanel.Dock="Top" Name="MainMenu">
             <MenuItem Header="_File">
                 <MenuItem Header="_Open..." Click="OnOpenClick" InputGesture="Ctrl+O" />
                 <MenuItem Header="_Reload" Click="OnReloadClick" InputGesture="F2" />
@@ -17,12 +17,14 @@
             <MenuItem Header="_Edit">
                 <MenuItem Header="_Copy" Click="OnEditCopyClick" InputGesture="Ctrl+C" />
                 <Separator />
-                <MenuItem Header="_Find..." Click="OnFindMenuClick" InputGesture="Ctrl+F" />
-                <MenuItem Header="_Go To Line..." Click="OnGoToLineClick" InputGesture="Ctrl+G" />
+                <MenuItem Header="_Find..." Name="FindMenuItem" Click="OnFindMenuClick" InputGesture="Ctrl+F" />
+                <MenuItem Header="_Go To Line..." Name="GoToLineMenuItem" Click="OnGoToLineClick" InputGesture="Ctrl+G" />
                 <Separator />
-                <MenuItem Header="_Cycle Encoding" Click="OnCycleEncodingClick" InputGesture="Ctrl+Shift+E" />
+                <MenuItem Header="_Cycle Encoding" Name="CycleEncodingMenuItem" Click="OnCycleEncodingClick" InputGesture="Ctrl+Shift+E" />
             </MenuItem>
             <MenuItem Header="_View">
+                <MenuItem Header="_Hex View" Name="HexViewMenuItem" ToggleType="CheckBox" Click="OnToggleHexView" InputGesture="Ctrl+B" />
+                <Separator />
                 <MenuItem Header="_Line Numbers" Name="LineNumbersMenuItem" ToggleType="CheckBox" Click="OnToggleLineNumbers" InputGesture="Ctrl+N" />
                 <MenuItem Header="_Column Ruler" Name="ColumnRulerMenuItem" ToggleType="CheckBox" Click="OnToggleColumnRuler" InputGesture="Ctrl+R" />
                 <MenuItem Header="_Word Wrap" Name="WordWrapMenuItem" ToggleType="CheckBox" Click="OnToggleWordWrap" InputGesture="Ctrl+W" />
@@ -66,6 +68,7 @@
         </Border>
         <Grid ColumnDefinitions="*,Auto" RowDefinitions="*,Auto">
             <local:DocumentView Name="DocView" Grid.Row="0" Grid.Column="0" />
+            <local:HexView Name="HexV" Grid.Row="0" Grid.Column="0" IsVisible="False" />
             <ScrollBar Name="VScrollBar"
                        Grid.Row="0" Grid.Column="1"
                        Orientation="Vertical"
