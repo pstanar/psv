@@ -71,4 +71,10 @@
                               Condition="'%(ResolvedFileToPublish.Extension)' == '.pdb'" />
     </ItemGroup>
   </Target>
+
+  <!-- Linux desktop integration (.desktop files, app launchers) expects a standalone icon file
+       next to the executable; ship it as psv.png so it doesn't require extracting the single-file bundle. -->
+  <Target Name="CopyLinuxIcon" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
+    <Copy SourceFiles="Assets\app-icon.png" DestinationFiles="$(PublishDir)psv.png" />
+  </Target>
 </Project>
