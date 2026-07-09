@@ -139,6 +139,68 @@ public class HexViewModeTests
     }
 
     [AvaloniaFact]
+    public void OpeningABinaryFileGivesTheHexViewKeyboardFocus()
+    {
+        // Regression: nothing focused HexV on open - DocView only ever got focus implicitly by
+        // being the first focusable control - so a file opened straight into hex mode left every
+        // navigation key dead until the user clicked inside the view.
+        using var isolation = new SettingsIsolation();
+        string path = WriteTempBinaryFile();
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Show();
+                window.OpenFile(path);
+
+                Assert.True(window.IsHexViewActiveForTests);
+                Assert.True(window.HexViewForTests.IsFocused, "expected the hex view to receive keyboard focus on open");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task TogglingHexViewMovesKeyboardFocusToTheVisibleView()
+    {
+        using var isolation = new SettingsIsolation();
+        string path = WriteTempTextFile();
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Show();
+                window.OpenFile(path);
+                bool completed = await WaitUntilAsync(() => window.DocumentForTests?.Index.IsComplete == true, TimeSpan.FromSeconds(5));
+                Assert.True(completed, "expected the initial index build to complete");
+
+                window.ToggleHexViewForTests();
+                Assert.True(window.HexViewForTests.IsFocused, "expected focus to follow the toggle into hex view");
+
+                window.ToggleHexViewForTests();
+                Assert.True(window.DocumentViewForTests.IsFocused, "expected focus to follow the toggle back to the text view");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
     public void OpeningWithBinCliFlagForcesHexViewEvenForTextContent()
     {
         using var isolation = new SettingsIsolation();

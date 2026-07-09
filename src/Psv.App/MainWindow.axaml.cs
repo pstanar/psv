@@ -681,6 +681,13 @@ public partial class MainWindow : Window
         HexV.Document = hex ? _document : null;
         HexViewMenuItem.IsChecked = hex;
 
+        // Keyboard focus must follow the visible view. Nothing focuses either view explicitly on
+        // open - DocView only ends up focused because it's the first focusable control when the
+        // window opens - so a file opened (or Ctrl+B-toggled) into hex mode would leave focus on
+        // the now-hidden DocView and every navigation key would be dead until the user clicked
+        // inside the hex view.
+        ((InputElement)(hex ? HexV : DocView)).Focus();
+
         StatusEncodingText.IsVisible = !hex;
         StatusLineEndingText.IsVisible = !hex;
 
