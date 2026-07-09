@@ -401,7 +401,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        long newMaxTop = Math.Max(0, known - DocView.VisibleLineCount);
+        // FullyVisibleLineCount, not VisibleLineCount: must match DocView's own MaxTopLine() so
+        // the scrollbar's Maximum never lets the user drag past the point where DocView clamps
+        // TopLine itself, which would otherwise snap back visually on every such drag.
+        long newMaxTop = Math.Max(0, known - DocView.FullyVisibleLineCount);
 
         // Only apply follow-mode auto-scroll once the initial index build has completed at least
         // once. Without this, the very first tick after opening a file has TopLine == 0 and

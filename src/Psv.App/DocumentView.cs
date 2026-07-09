@@ -297,7 +297,18 @@ public sealed class DocumentView : Control
 
     public int VisibleLineCount => Math.Max(1, (int)Math.Ceiling((Bounds.Height - ComputeRulerHeight()) / _lineHeight));
 
+    // Rounds down, unlike VisibleLineCount: used to cap scrolling so the document's actual last
+    // line always lands in a fully-fitting row. VisibleLineCount rounds up on purpose, so a
+    // partially-fitting row still gets drawn (sliced off by ClipToBounds) as a "there's more
+    // below" teaser while scrolling mid-file - but that same slicing is wrong for the true last
+    // line, which has nothing below it to justify the cut.
+    internal int FullyVisibleLineCount => Math.Max(1, (int)Math.Floor((Bounds.Height - ComputeRulerHeight()) / _lineHeight));
+
     internal long? HoverColumnForTests => _hoverColumn;
+
+    internal double LineHeightForTests => _lineHeight;
+
+    internal IReadOnlyList<RenderedRow> RenderedRowsForTests => _renderedRows;
 
     internal void SetHoverPositionForTests(Point position) => UpdateHoverColumn(position);
 
@@ -337,6 +348,34 @@ public sealed class DocumentView : Control
             // must not survive into the newly opened document.
             _selectionAnchor = null;
             _selectionFocus = null;
+
+            // Likewise for the previous file's longest-line-seen-so-far stat (see Render()) -
+            // otherwise a long line from whatever was open before could keep the horizontal
+            // scrollbar shown, or the status bar's "Col x / y" max, wrong for the new file.
+            _lastMaxLineChars = 0;
+        }
+        else if (change.Property == BoundsProperty && Document is { } document)
+        {
+            var oldBounds = change.GetOldValue<Rect>();
+            double newHeight = change.GetNewValue<Rect>().Height;
+            if (oldBounds.Height != newHeight)
+            {
+                // Bounds can shrink after TopLine was already pinned to the end of the file - e.g.
+                // the horizontal scrollbar's row claiming height only once a long line is found, or
+                // the window itself being resized. A plain downward clamp isn't enough: the old
+                // TopLine can still be <= the new MaxTopLine yet no longer reach the actual last
+                // line, since fewer rows now fit. So instead, only if the view was exactly pinned
+                // to the old bottom, re-pin it to the new bottom - which may be higher, not just
+                // lower. A shrink that happens mid-scroll (not already at the end) must not jump.
+                double rulerHeight = ComputeRulerHeight();
+                long oldFullyVisible = Math.Max(1, (long)Math.Floor((oldBounds.Height - rulerHeight) / _lineHeight));
+                long oldMaxTopLine = Math.Max(0, document.Index.KnownLineCount - oldFullyVisible);
+
+                if (TopLine >= oldMaxTopLine)
+                {
+                    TopLine = MaxTopLine();
+                }
+            }
         }
     }
 
@@ -521,7 +560,16 @@ public sealed class DocumentView : Control
             lineNumber++;
         }
 
-        if (maxLineChars != _lastMaxLineChars)
+        // Only grows, never shrinks: maxLineChars above is just the longest line among the rows
+        // this one pass happened to render, not the whole document (scanning every line for that
+        // up front would be O(file size) on every keystroke/scroll). Overwriting on every change
+        // let this value swing both up AND down as the visible window shifted by even one row -
+        // e.g. the horizontal scrollbar's own height reservation changing how many rows fit,
+        // which could scroll the single longest line in and out of view - which in turn flipped
+        // the scrollbar back off, undoing the very change that hid the long line, forever. Sticking
+        // to the max ever actually seen for this document breaks that cycle: once a line's width is
+        // observed it can only push the horizontal scroll range out, never pull it back in.
+        if (maxLineChars > _lastMaxLineChars)
         {
             _lastMaxLineChars = maxLineChars;
             ContentMeasured?.Invoke(this, EventArgs.Empty);
@@ -1206,7 +1254,7 @@ public sealed class DocumentView : Control
             return 0;
         }
 
-        return Math.Max(0, document.Index.KnownLineCount - VisibleLineCount);
+        return Math.Max(0, document.Index.KnownLineCount - FullyVisibleLineCount);
     }
 
     private long MaxHorizontalOffset() => Math.Max(0, LastMaxLineLength - VisibleCharCount);

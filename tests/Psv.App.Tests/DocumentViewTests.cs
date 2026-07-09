@@ -29,6 +29,155 @@ public class DocumentViewTests
     }
 
     [AvaloniaFact]
+    public void ScrollingToEndNeverLeavesTheDocumentsLastLinePartiallyClipped()
+    {
+        // Mid-file, a row that only partially fits at the bottom of the viewport is drawn anyway
+        // (sliced off by ClipToBounds) as a "there's more below" teaser - that's intentional. But
+        // when scrolled all the way down, the document's actual last line must land in a row that
+        // fully fits: there's nothing below it to justify slicing it in half.
+        var view = new DocumentView { FontFamily = new FontFamily("Consolas"), FontSize = 14, ShowLineNumbers = false, ShowColumnRuler = false };
+        double lineHeight = view.LineHeightForTests;
+
+        // Deliberately not a multiple of the line height, so the top-of-file render exercises the
+        // partially-clipped teaser row this test needs to contrast against the end-of-file case.
+        double height = (5 * lineHeight) + (lineHeight / 2);
+
+        string content = string.Concat(Enumerable.Range(0, 50).Select(i => $"line{i}\n"));
+        string path = Path.GetTempFileName();
+        File.WriteAllText(path, content);
+        var document = PsvDocument.Open(path);
+        try
+        {
+            document.BuildIndex();
+
+            view.Document = document;
+            view.Width = 800;
+            view.Height = height;
+
+            var window = new Window { Content = view };
+            window.Show();
+            window.CaptureRenderedFrame()?.Dispose();
+
+            var lastRowAtTop = view.RenderedRowsForTests[^1];
+            Assert.True(
+                lastRowAtTop.Y + lineHeight > view.Bounds.Height,
+                "test setup expects a partially-clipped teaser row while scrolled at the top");
+
+            view.TopLine = long.MaxValue;
+            window.CaptureRenderedFrame()?.Dispose();
+
+            var lastRowAtEnd = view.RenderedRowsForTests[^1];
+            Assert.Equal(49, lastRowAtEnd.LineNumber);
+            Assert.True(
+                lastRowAtEnd.Y + lineHeight <= view.Bounds.Height + 0.01,
+                "the document's actual last line must not be clipped once scrolled to the end");
+
+            window.Close();
+        }
+        finally
+        {
+            document.Dispose();
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
+    public void ShrinkingTheViewportAfterScrollingToEndReclampsTopLineToAvoidClippingTheLastLine()
+    {
+        // Mirrors what happens once the horizontal scrollbar's row claims space only after the
+        // initial layout (MainWindow's Grid row shrinks DocView when HScrollBar.IsVisible flips
+        // on for a long line found after the initial scroll-to-end): the viewport shrinks *after*
+        // TopLine was already pinned to the end, and the last line must not end up half-cut as a
+        // result of that stale clamp.
+        var view = new DocumentView { FontFamily = new FontFamily("Consolas"), FontSize = 14, ShowLineNumbers = false, ShowColumnRuler = false };
+        double lineHeight = view.LineHeightForTests;
+        double tallHeight = 6 * lineHeight;
+
+        string content = string.Concat(Enumerable.Range(0, 50).Select(i => $"line{i}\n"));
+        string path = Path.GetTempFileName();
+        File.WriteAllText(path, content);
+        var document = PsvDocument.Open(path);
+        try
+        {
+            document.BuildIndex();
+
+            view.Document = document;
+            view.Width = 800;
+            view.Height = tallHeight;
+
+            var window = new Window { Content = view };
+            window.Show();
+            window.CaptureRenderedFrame()?.Dispose();
+
+            view.TopLine = long.MaxValue;
+            window.CaptureRenderedFrame()?.Dispose();
+            Assert.Equal(49, view.RenderedRowsForTests[^1].LineNumber);
+
+            // Shrink the viewport the way DocView's Grid row shrinks once HScrollBar.IsVisible
+            // flips on - without a matching change to TopLine, the row that used to exactly fit
+            // the taller viewport no longer fits the shorter one.
+            view.Height = tallHeight - (lineHeight / 2);
+            window.CaptureRenderedFrame()?.Dispose();
+
+            var lastRow = view.RenderedRowsForTests[^1];
+            Assert.True(
+                lastRow.Y + lineHeight <= view.Bounds.Height + 0.01,
+                "the last line must not be clipped after the viewport shrinks out from under an end-of-file scroll position");
+
+            window.Close();
+        }
+        finally
+        {
+            document.Dispose();
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
+    public void LastMaxLineLengthNeverShrinksWhenTheLongestLineScrollsOutOfView()
+    {
+        // LastMaxLineLength is only ever computed over whichever rows the current Render() pass
+        // happened to draw (scanning the whole file up front would be O(file size) on every
+        // scroll), not the whole document. Scrolling the one long line out of view must not pull
+        // this back down - that previously let it swing between two values (e.g. once the
+        // horizontal scrollbar's own height reservation changed how many rows fit, scrolling that
+        // line in and out of the visible set), flipping the horizontal scrollbar on/off forever.
+        var view = new DocumentView { FontFamily = new FontFamily("Consolas"), FontSize = 14, ShowLineNumbers = false, ShowColumnRuler = false, Width = 800 };
+        double lineHeight = view.LineHeightForTests;
+        view.Height = 5 * lineHeight;
+
+        string longLine = new string('x', 200);
+        string content = $"short0\n{longLine}\n" + string.Concat(Enumerable.Range(0, 50).Select(i => $"s{i}\n"));
+        string path = Path.GetTempFileName();
+        File.WriteAllText(path, content);
+        var document = PsvDocument.Open(path);
+        try
+        {
+            document.BuildIndex();
+
+            view.Document = document;
+            var window = new Window { Content = view };
+            window.Show();
+            window.CaptureRenderedFrame()?.Dispose();
+
+            Assert.Equal(200, view.LastMaxLineLength);
+
+            // Scroll well past the long line - the rendered rows from here on are all short.
+            view.TopLine = 40;
+            window.CaptureRenderedFrame()?.Dispose();
+
+            Assert.Equal(200, view.LastMaxLineLength);
+
+            window.Close();
+        }
+        finally
+        {
+            document.Dispose();
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
     public void ColumnRulerIsShownByDefault()
     {
         var view = new DocumentView();
