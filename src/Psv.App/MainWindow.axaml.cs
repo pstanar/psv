@@ -332,6 +332,19 @@ public partial class MainWindow : Window
                     if (_tailingEnabled)
                     {
                         document.StartTailing();
+
+                        // Jump to the end once, same as toggling the View menu checkbox on
+                        // (SyncTailingToCurrentDocument) - a file opened with --tail should start
+                        // following the end rather than sitting at the top waiting for growth.
+                        // Must run on the UI thread since this continuation runs on the default
+                        // scheduler; guard against a reopen having superseded _document meanwhile.
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            if (ReferenceEquals(_document, document))
+                            {
+                                DocView.TopLine = long.MaxValue;
+                            }
+                        });
                     }
                 }
                 else if (task.IsFaulted)

@@ -149,6 +149,36 @@ public class LiveTailTests
     }
 
     [AvaloniaFact]
+    public async Task OpenFileWithTailOverrideJumpsTheViewToTheEndOfTheFile()
+    {
+        // Mirrors EnablingLiveTailJumpsTheViewToTheEndOfTheFile, but for the --tail CLI switch
+        // path: the jump must happen on open, not only when toggled on later via the View menu.
+        using var isolation = new SettingsIsolation();
+        string path = WriteTempFileWithLines(500);
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Show();
+
+                window.OpenFile(path, forcedEncoding: null, enableTailing: true);
+
+                bool jumped = await WaitUntilAsync(() => window.TopLineForTests > 0, TimeSpan.FromSeconds(5));
+                Assert.True(jumped, "expected --tail to scroll the view down once indexing completed");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
     public async Task DisablingLiveTailStopsTailingOnTheCurrentDocument()
     {
         using var isolation = new SettingsIsolation();
