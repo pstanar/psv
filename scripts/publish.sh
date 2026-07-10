@@ -55,6 +55,7 @@ for target_rid in "${targets[@]}"; do
         -p:PublishReadyToRun=true \
         "-p:Version=$version" \
         "-p:FileVersion=$version.$build" \
+        "-p:InformationalVersion=$version.$build" \
         "-p:SourceRevisionId=$sha" \
         -o "$out_dir"
 done

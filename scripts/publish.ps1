@@ -47,6 +47,7 @@ foreach ($targetRid in $targets) {
         -p:PublishReadyToRun=true `
         "-p:Version=$Version" `
         "-p:FileVersion=$Version.$Build" `
+        "-p:InformationalVersion=$Version.$Build" `
         "-p:SourceRevisionId=$Sha" `
         -o $outDir
 
