@@ -374,7 +374,7 @@ public partial class MainWindow : Window
         _lastKnownByteLength = -1;
         _initialIndexSeen = false;
 
-        StatusPathText.Text = path;
+        Title = $"psv - {path}";
         StatusSizeText.Text = FormatFileSize(document.FileSizeBytes);
         StatusEncodingText.Text = string.Empty;
         StatusLineEndingText.Text = string.Empty;
@@ -557,7 +557,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        StatusPathText.Text = path;
+        Title = $"psv - {path}";
         StatusSizeText.Text = FormatFileSize(document.FileSizeBytes);
 
         if (!document.IsBinary)

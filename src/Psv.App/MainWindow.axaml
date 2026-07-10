@@ -54,7 +54,6 @@
         </Border>
         <Border DockPanel.Dock="Bottom" BorderBrush="Gray" BorderThickness="0,1,0,0" Padding="6,3">
             <StackPanel Orientation="Horizontal" Spacing="16">
-                <TextBlock Name="StatusPathText" />
                 <TextBlock Name="StatusSizeText" />
                 <TextBlock Name="StatusEncodingText"
                            Cursor="Hand"
