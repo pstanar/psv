@@ -2,7 +2,8 @@ using Psv.Core;
 
 namespace Psv.App;
 
-public readonly record struct CliArgs(string? Path, TextEncodingKind? Encoding, bool Tail, bool Bin);
+/// <summary><paramref name="BinBytesPerRow"/> is null when none of --bin16/--bin32/--bin64 were passed (auto-detect text vs. binary); otherwise 16, 32, or 64, forcing hex view at that row width.</summary>
+public readonly record struct CliArgs(string? Path, TextEncodingKind? Encoding, bool Tail, int? BinBytesPerRow);
 
 public static class CliArgsParser
 {
@@ -11,7 +12,7 @@ public static class CliArgsParser
         string? path = null;
         TextEncodingKind? encoding = null;
         bool tail = false;
-        bool bin = false;
+        int? binBytesPerRow = null;
 
         foreach (string arg in args)
         {
@@ -31,9 +32,17 @@ public static class CliArgsParser
             {
                 tail = true;
             }
-            else if (string.Equals(arg, "--bin", StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(arg, "--bin16", StringComparison.OrdinalIgnoreCase))
             {
-                bin = true;
+                binBytesPerRow = 16;
+            }
+            else if (string.Equals(arg, "--bin32", StringComparison.OrdinalIgnoreCase))
+            {
+                binBytesPerRow = 32;
+            }
+            else if (string.Equals(arg, "--bin64", StringComparison.OrdinalIgnoreCase))
+            {
+                binBytesPerRow = 64;
             }
             else if (!arg.StartsWith("--", StringComparison.Ordinal))
             {
@@ -41,7 +50,7 @@ public static class CliArgsParser
             }
         }
 
-        parsed = new CliArgs(path, encoding, tail, bin);
+        parsed = new CliArgs(path, encoding, tail, binBytesPerRow);
         error = null;
         return true;
     }

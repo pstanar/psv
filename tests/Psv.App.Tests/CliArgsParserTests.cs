@@ -123,38 +123,53 @@ public class CliArgsParserTests
         bool ok = CliArgsParser.TryParse(["file.log"], out var parsed, out _);
 
         Assert.True(ok);
-        Assert.False(parsed.Bin);
+        Assert.Null(parsed.BinBytesPerRow);
     }
 
-    [Fact]
-    public void BinFlagEnablesForcedHexViewRegardlessOfArgumentOrder()
+    [Theory]
+    [InlineData("--bin16", 16)]
+    [InlineData("--bin32", 32)]
+    [InlineData("--bin64", 64)]
+    public void BinFlagEnablesForcedHexViewAtTheRequestedRowWidthRegardlessOfArgumentOrder(string flag, int expectedBytesPerRow)
     {
-        bool ok = CliArgsParser.TryParse(["--bin", "file.exe"], out var parsed, out string? error);
+        bool ok = CliArgsParser.TryParse([flag, "file.exe"], out var parsed, out string? error);
 
         Assert.True(ok);
         Assert.Null(error);
         Assert.Equal("file.exe", parsed.Path);
-        Assert.True(parsed.Bin);
+        Assert.Equal(expectedBytesPerRow, parsed.BinBytesPerRow);
     }
 
-    [Fact]
-    public void BinFlagIsCaseInsensitive()
+    [Theory]
+    [InlineData("--BIN16", 16)]
+    [InlineData("--Bin32", 32)]
+    [InlineData("--BIN64", 64)]
+    public void BinFlagIsCaseInsensitive(string flag, int expectedBytesPerRow)
     {
-        bool ok = CliArgsParser.TryParse(["--BIN", "file.exe"], out var parsed, out _);
+        bool ok = CliArgsParser.TryParse([flag, "file.exe"], out var parsed, out _);
 
         Assert.True(ok);
-        Assert.True(parsed.Bin);
+        Assert.Equal(expectedBytesPerRow, parsed.BinBytesPerRow);
     }
 
     [Fact]
     public void BinFlagCombinesWithEncodingAndTail()
     {
-        bool ok = CliArgsParser.TryParse(["--encoding=utf-16le", "--tail", "--bin", "file.log"], out var parsed, out _);
+        bool ok = CliArgsParser.TryParse(["--encoding=utf-16le", "--tail", "--bin32", "file.log"], out var parsed, out _);
 
         Assert.True(ok);
         Assert.Equal(TextEncodingKind.Utf16LE, parsed.Encoding);
         Assert.True(parsed.Tail);
-        Assert.True(parsed.Bin);
+        Assert.Equal(32, parsed.BinBytesPerRow);
         Assert.Equal("file.log", parsed.Path);
+    }
+
+    [Fact]
+    public void LastBinFlagWinsWhenMultipleAreGiven()
+    {
+        bool ok = CliArgsParser.TryParse(["--bin16", "--bin64", "file.exe"], out var parsed, out _);
+
+        Assert.True(ok);
+        Assert.Equal(64, parsed.BinBytesPerRow);
     }
 }

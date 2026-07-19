@@ -54,8 +54,9 @@ public sealed class PsvDocument : IDisposable
 
     /// <summary>
     /// True if the file is being viewed as binary/hex rather than text - either detected from its
-    /// leading bytes (<see cref="BinaryContentDetector"/>) or forced via the <c>--bin</c> CLI flag
-    /// or the Ctrl+B view-mode toggle. <see cref="Index"/>/<see cref="Locator"/> are never built for
+    /// leading bytes (<see cref="BinaryContentDetector"/>) or forced via the <c>--bin16</c>/
+    /// <c>--bin32</c>/<c>--bin64</c> CLI flags or the Ctrl+B view-mode toggle. <see cref="Index"/>/
+    /// <see cref="Locator"/> are never built for
     /// a binary document (see <see cref="BuildIndex"/>) - hex rendering reads <see cref="ByteSource"/>
     /// directly instead, since a fixed-width byte grid needs no line-boundary scanning at all.
     /// </summary>

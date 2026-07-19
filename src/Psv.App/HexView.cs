@@ -15,8 +15,9 @@ namespace Psv.App;
 /// A byte offset within the document. Unlike <see cref="DocumentPosition"/>'s gap-based column (a
 /// cursor position between characters), a <see cref="BytePosition"/> names an actual byte cell -
 /// the natural unit to drag-select over a fixed-width hex grid. Row/column-in-row are derived
-/// (<c>ByteOffset / HexView.BytesPerRow</c>, <c>% HexView.BytesPerRow</c>) rather than stored,
-/// since the grid is fixed-width and needs no line-boundary scan to locate.
+/// (<c>ByteOffset / view.BytesPerRow</c>, <c>% view.BytesPerRow</c>) rather than stored, since each
+/// row is exactly <see cref="HexView.BytesPerRow"/> bytes wide and needs no line-boundary scan to
+/// locate.
 /// </summary>
 internal readonly record struct BytePosition(long ByteOffset) : IComparable<BytePosition>
 {
@@ -30,22 +31,29 @@ internal readonly record struct RenderedHexRow(double Y, long RowStartOffset, in
 internal readonly record struct HexLayout(double GutterWidth, double HexPaneX, double SeparatorX, double AsciiPaneX);
 
 /// <summary>
-/// Virtualized binary/hex viewport: offset gutter, a 16-bytes-per-row hex pane, and a mirrored
-/// ASCII pane, reading bytes directly via <see cref="PsvDocument.ByteSource"/>. Row width is fixed,
-/// so - unlike <see cref="DocumentView"/> - locating any row is pure arithmetic (<c>offset =
+/// Virtualized binary/hex viewport: offset gutter, a <see cref="BytesPerRow"/>-bytes-per-row hex
+/// pane, and a mirrored ASCII pane, reading bytes directly via <see cref="PsvDocument.ByteSource"/>.
+/// Row width is uniform across the whole document (just user-configurable between 16/32/64), so -
+/// unlike <see cref="DocumentView"/> - locating any row is pure arithmetic (<c>offset =
 /// row * BytesPerRow</c>), with no line-boundary scan and no horizontal scroll/word-wrap concept.
 /// Mirrors <see cref="DocumentView"/>'s selection (stream + Alt-drag rectangular), auto-scroll, and
 /// omniscroll patterns; see that class for the rationale behind each.
 /// </summary>
 public sealed class HexView : Control
 {
-    public const int BytesPerRow = 16;
+    public const int DefaultBytesPerRow = 32;
 
     public static readonly StyledProperty<PsvDocument?> DocumentProperty =
         AvaloniaProperty.Register<HexView, PsvDocument?>(nameof(Document));
 
     public static readonly StyledProperty<long> TopLineProperty =
         AvaloniaProperty.Register<HexView, long>(nameof(TopLine));
+
+    public static readonly StyledProperty<int> BytesPerRowProperty =
+        AvaloniaProperty.Register<HexView, int>(nameof(BytesPerRow), defaultValue: DefaultBytesPerRow);
+
+    public static readonly StyledProperty<double> HorizontalOffsetProperty =
+        AvaloniaProperty.Register<HexView, double>(nameof(HorizontalOffset));
 
     public static readonly StyledProperty<bool> ZebraStripingProperty =
         AvaloniaProperty.Register<HexView, bool>(nameof(ZebraStriping), defaultValue: true);
@@ -71,6 +79,14 @@ public sealed class HexView : Control
     private const double LinePadding = 2;
     private const double GutterPadding = 6;
     private const int WheelScrollLines = 3;
+
+    // Mid-row gaps: a narrow gap at every 8-byte boundary, and a slightly wider one at every
+    // 16-byte ("word") boundary nested inside it, so a 32/64-byte row still reads as a stack of
+    // the traditional 16-byte rows rather than one undifferentiated strip of hex pairs.
+    private const int GroupBoundary = 8;
+    private const int WordBoundary = 16;
+    private const double GroupGapChars = 1.0;
+    private const double WordGapChars = 2.0;
     private static readonly TimeSpan AutoScrollInterval = TimeSpan.FromMilliseconds(80);
 
     // Middle-click "omniscroll" - see DocumentView's field of the same name. Vertical-only here:
@@ -90,6 +106,11 @@ public sealed class HexView : Control
     private IBrush _gutterBackgroundBrush = Brushes.White;
     private IBrush _gutterTextBrush = Brushes.Gray;
     private IPen _separatorPen = new Pen(Brushes.Gray);
+
+    // Reused scratch buffers for building one row's hex/ASCII text - see DrawHexLine/DrawAsciiLine
+    // for why a whole row is shaped as a single string instead of one FormattedText per byte.
+    private readonly StringBuilder _hexLineBuilder = new();
+    private readonly StringBuilder _asciiLineBuilder = new();
 
     // Populated fresh every Render() call - see RenderedHexRow for why.
     private readonly List<RenderedHexRow> _renderedRows = [];
@@ -118,8 +139,8 @@ public sealed class HexView : Control
     static HexView()
     {
         AffectsRender<HexView>(
-            DocumentProperty, TopLineProperty, ZebraStripingProperty, FollowSystemThemeProperty,
-            ZebraEvenColorProperty, ZebraOddColorProperty, TextColorProperty, FontFamilyProperty, FontSizeProperty);
+            DocumentProperty, TopLineProperty, BytesPerRowProperty, HorizontalOffsetProperty, ZebraStripingProperty,
+            FollowSystemThemeProperty, ZebraEvenColorProperty, ZebraOddColorProperty, TextColorProperty, FontFamilyProperty, FontSizeProperty);
     }
 
     public HexView()
@@ -141,6 +162,28 @@ public sealed class HexView : Control
         get => GetValue(TopLineProperty);
         set => SetValue(TopLineProperty, Math.Clamp(value, 0, MaxTopLine()));
     }
+
+    public int BytesPerRow
+    {
+        get => GetValue(BytesPerRowProperty);
+        set => SetValue(BytesPerRowProperty, value);
+    }
+
+    /// <summary>
+    /// Pixel scroll offset applied to the hex and ASCII panes only - the offset gutter stays
+    /// pinned in place, matching how <see cref="DocumentView"/>'s line-number gutter never scrolls
+    /// horizontally either. Only reachable when <see cref="BytesPerRow"/> is wide enough that the
+    /// hex+ASCII content overflows the viewport (32/64-byte rows on a normal-width window); at the
+    /// original fixed 16-byte row width this never came up.
+    /// </summary>
+    public double HorizontalOffset
+    {
+        get => GetValue(HorizontalOffsetProperty);
+        set => SetValue(HorizontalOffsetProperty, Math.Clamp(value, 0, MaxHorizontalOffset()));
+    }
+
+    /// <summary>Read-only view of <see cref="MaxHorizontalOffset"/> for MainWindow to size the shared horizontal scrollbar against, without duplicating this view's layout/font-metric math.</summary>
+    internal double MaxHorizontalOffsetValue => MaxHorizontalOffset();
 
     public bool ZebraStriping
     {
@@ -197,6 +240,10 @@ public sealed class HexView : Control
 
     internal HexLayout LayoutForTests => ComputeLayout();
 
+    internal double HexByteXForTests(int byteIndex) => HexByteX(byteIndex, ComputeLayout().HexPaneX);
+
+    internal long MaxTopLineForTests => MaxTopLine();
+
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
@@ -205,6 +252,10 @@ public sealed class HexView : Control
         {
             RefreshRenderResources();
             RecomputeMetrics();
+
+            // Character width feeds MaxHorizontalOffset (see ComputeLayout) - re-clamp rather than
+            // leaving a scroll position that overshoots the content's new width.
+            HorizontalOffset = HorizontalOffset;
         }
         else if (change.Property == TextColorProperty
             || change.Property == ZebraEvenColorProperty
@@ -217,12 +268,23 @@ public sealed class HexView : Control
         {
             _selectionAnchor = null;
             _selectionFocus = null;
+            HorizontalOffset = 0;
+        }
+        else if (change.Property == BytesPerRowProperty)
+        {
+            // Row count (and therefore MaxTopLine) shifts whenever row width changes - re-clamp
+            // rather than leaving TopLine pointing past the new end of the document. The stored
+            // selection, unlike TopLine, needs no adjustment: BytePosition is a plain byte offset,
+            // not derived from row width (see BytePosition's doc comment). Content width (and so
+            // MaxHorizontalOffset) shifts too - re-clamp that as well.
+            TopLine = TopLine;
+            HorizontalOffset = HorizontalOffset;
         }
         else if (change.Property == BoundsProperty && Document is not null)
         {
             var oldBounds = change.GetOldValue<Rect>();
-            double newHeight = change.GetNewValue<Rect>().Height;
-            if (oldBounds.Height != newHeight)
+            var newBounds = change.GetNewValue<Rect>();
+            if (oldBounds.Height != newBounds.Height)
             {
                 long oldFullyVisible = Math.Max(1, (long)Math.Floor(oldBounds.Height / _lineHeight));
                 long oldMaxTopLine = Math.Max(0, TotalRowCount() - oldFullyVisible);
@@ -231,6 +293,11 @@ public sealed class HexView : Control
                 {
                     TopLine = MaxTopLine();
                 }
+            }
+
+            if (oldBounds.Width != newBounds.Width)
+            {
+                HorizontalOffset = HorizontalOffset;
             }
         }
     }
@@ -311,21 +378,42 @@ public sealed class HexView : Control
         double gutterWidth = ComputeGutterWidth();
         double hexPaneX = gutterWidth + GutterPadding;
 
-        // 16 two-digit cells, each followed by a one-char gap, plus one extra char of gap at the
-        // row's midpoint (see HexByteX) splitting the hex pane into two 8-byte halves.
-        double hexContentWidth = ((BytesPerRow * 3) + 1) * _charWidth;
+        // BytesPerRow two-digit cells, each followed by a one-char gap, plus the extra grouping
+        // gaps computed by GapBeforeByte (see its doc comment).
+        int bytesPerRow = BytesPerRow;
+        double hexContentWidth = (bytesPerRow * 3 * _charWidth) + (GapBeforeByte(bytesPerRow - 1) * _charWidth);
 
         double separatorX = hexPaneX + hexContentWidth + GutterPadding;
         double asciiPaneX = separatorX + GutterPadding;
         return new HexLayout(gutterWidth, hexPaneX, separatorX, asciiPaneX);
     }
 
-    /// <summary>The left edge of hex byte cell <paramref name="byteIndex"/> - each cell is 2 hex digits + 1 gap char wide, with one extra gap char at the row's midpoint.</summary>
-    private double HexByteX(int byteIndex, double hexPaneX)
+    /// <summary>
+    /// Extra pixel gap accumulated immediately before hex cell <paramref name="byteIndex"/>, on top
+    /// of each cell's own 1-char inter-byte spacing: a narrow <see cref="GroupGapChars"/>-wide gap
+    /// at every <see cref="GroupBoundary"/>-byte boundary, widened to <see cref="WordGapChars"/> at
+    /// every <see cref="WordBoundary"/>-byte boundary nested inside it. Only boundaries at or before
+    /// <paramref name="byteIndex"/> count, so cell 0 has no leading gap and the row's own trailing
+    /// edge never grows one either. BytesPerRow tops out at 64 (see the "Bytes Per Row" menu), so
+    /// this loop is at most 7 iterations - cheap enough to call per-byte rather than caching.
+    /// </summary>
+    private static double GapBeforeByte(int byteIndex)
     {
-        double midGap = byteIndex >= BytesPerRow / 2 ? _charWidth : 0;
-        return hexPaneX + (byteIndex * 3 * _charWidth) + midGap;
+        double gapChars = 0;
+        for (int boundary = GroupBoundary; boundary <= byteIndex; boundary += GroupBoundary)
+        {
+            gapChars += GapAtBoundary(boundary);
+        }
+
+        return gapChars;
     }
+
+    /// <summary>The extra gap chars (on top of the normal 1-char inter-byte spacing) added at boundary <paramref name="boundary"/> alone, not cumulative - see <see cref="GapBeforeByte"/> for the running total this feeds.</summary>
+    private static double GapAtBoundary(int boundary) => boundary % WordBoundary == 0 ? WordGapChars : GroupGapChars;
+
+    /// <summary>The left edge of hex byte cell <paramref name="byteIndex"/> - each cell is 2 hex digits + 1 gap char wide, plus any grouping gaps from <see cref="GapBeforeByte"/>.</summary>
+    private double HexByteX(int byteIndex, double hexPaneX) =>
+        hexPaneX + (byteIndex * 3 * _charWidth) + (GapBeforeByte(byteIndex) * _charWidth);
 
     public override void Render(DrawingContext context)
     {
@@ -343,6 +431,7 @@ public sealed class HexView : Control
         long topRow = TopLine;
         long length = document.ByteSource.Length;
         var layout = ComputeLayout();
+        double horizontalOffset = HorizontalOffset;
 
         context.FillRectangle(_gutterBackgroundBrush, new Rect(0, 0, layout.GutterWidth, Bounds.Height));
 
@@ -364,30 +453,37 @@ public sealed class HexView : Control
             var rowBrush = (zebra && rowNumber % 2 != 0) ? _oddRowBrush : _evenRowBrush;
             _renderedRows.Add(new RenderedHexRow(y, rowStartOffset, byteCount));
 
-            DrawRow(context, rowBrush, layout, y, rowStartOffset, rowBuffer[..byteCount], GetSelectionRangeForRow(rowStartOffset, byteCount));
+            DrawRow(context, rowBrush, layout, y, rowStartOffset, rowBuffer[..byteCount], GetSelectionRangeForRow(rowStartOffset, byteCount), horizontalOffset);
 
             y += _lineHeight;
         }
 
-        context.DrawLine(_separatorPen, new Point(layout.SeparatorX, 0), new Point(layout.SeparatorX, Bounds.Height));
+        // The separator (and every hex/ASCII glyph drawn in DrawRow) scrolls with horizontalOffset;
+        // the gutter fill and DrawOffset above do not - clipping to the gutter's right edge stops
+        // scrolled-left content from ever painting over the still-pinned offset column.
+        using (context.PushClip(new Rect(layout.GutterWidth, 0, Math.Max(0, Bounds.Width - layout.GutterWidth), Bounds.Height)))
+        {
+            double separatorX = layout.SeparatorX - horizontalOffset;
+            context.DrawLine(_separatorPen, new Point(separatorX, 0), new Point(separatorX, Bounds.Height));
+        }
     }
 
     private void DrawRow(
         DrawingContext context, IBrush rowBrush, HexLayout layout, double y, long rowStartOffset,
-        ReadOnlySpan<byte> bytes, (int Start, int End)? selection)
+        ReadOnlySpan<byte> bytes, (int Start, int End)? selection, double horizontalOffset)
     {
         context.FillRectangle(rowBrush, new Rect(layout.GutterWidth, y, Bounds.Width - layout.GutterWidth, _lineHeight));
         DrawOffset(context, rowStartOffset, layout.GutterWidth, y);
 
-        if (selection is { } range)
+        using (context.PushClip(new Rect(layout.GutterWidth, y, Math.Max(0, Bounds.Width - layout.GutterWidth), _lineHeight)))
         {
-            DrawByteRangeHighlight(context, range.Start, range.End, layout, y);
-        }
+            if (selection is { } range)
+            {
+                DrawByteRangeHighlight(context, range.Start, range.End, layout, y, horizontalOffset);
+            }
 
-        for (int i = 0; i < bytes.Length; i++)
-        {
-            DrawHexByte(context, bytes[i], HexByteX(i, layout.HexPaneX), y);
-            DrawAsciiChar(context, bytes[i], layout.AsciiPaneX + (i * _charWidth), y);
+            DrawHexLine(context, bytes, layout.HexPaneX - horizontalOffset, y);
+            DrawAsciiLine(context, bytes, layout.AsciiPaneX - horizontalOffset, y);
         }
     }
 
@@ -397,31 +493,60 @@ public sealed class HexView : Control
         context.DrawText(formatted, new Point(gutterWidth - GutterPadding - formatted.Width, y));
     }
 
-    private void DrawHexByte(DrawingContext context, byte value, double x, double y)
+    /// <summary>
+    /// Draws every hex byte in the row as a single shaped string instead of one FormattedText/
+    /// DrawText call per byte - at BytesPerRow=64 across ~70 visible rows, per-byte drawing meant
+    /// thousands of DrawText calls per frame, each with its own fixed shaping/draw overhead; this
+    /// cuts that to one call per row regardless of row width. The embedded spaces reproduce
+    /// HexByteX's per-cell gap exactly (1 normal, 2 at an 8-byte boundary, 3 at a 16-byte one) - see
+    /// GapBeforeByte - so the monospace-rendered text lands on the same pixel grid hit-testing and
+    /// selection highlighting already assume.
+    /// </summary>
+    private void DrawHexLine(DrawingContext context, ReadOnlySpan<byte> bytes, double x, double y)
     {
-        var formatted = new FormattedText(value.ToString("X2", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, _typeface, FontSize, _textBrush);
+        _hexLineBuilder.Clear();
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            _hexLineBuilder.Append(bytes[i].ToString("X2", CultureInfo.InvariantCulture));
+
+            if (i + 1 < bytes.Length)
+            {
+                int boundary = i + 1;
+                int gapChars = 1 + (boundary % GroupBoundary == 0 ? (int)GapAtBoundary(boundary) : 0);
+                _hexLineBuilder.Append(' ', gapChars);
+            }
+        }
+
+        var formatted = new FormattedText(_hexLineBuilder.ToString(), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, _typeface, FontSize, _textBrush);
         context.DrawText(formatted, new Point(x, y));
     }
 
-    private void DrawAsciiChar(DrawingContext context, byte value, double x, double y)
+    /// <summary>Same one-string-per-row batching as <see cref="DrawHexLine"/>, but the ASCII pane has no grouping gaps to reproduce - see ToDisplayChar.</summary>
+    private void DrawAsciiLine(DrawingContext context, ReadOnlySpan<byte> bytes, double x, double y)
     {
-        var formatted = new FormattedText(ToDisplayChar(value).ToString(), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, _typeface, FontSize, _textBrush);
+        _asciiLineBuilder.Clear();
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            _asciiLineBuilder.Append(ToDisplayChar(bytes[i]));
+        }
+
+        var formatted = new FormattedText(_asciiLineBuilder.ToString(), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, _typeface, FontSize, _textBrush);
         context.DrawText(formatted, new Point(x, y));
     }
 
     /// <summary>Highlights the selected [start,end) byte range identically in both the hex and ASCII panes - the two panes always mirror the same selected bytes regardless of which pane the drag started in (see _selectionStartedInAsciiPane).</summary>
-    private void DrawByteRangeHighlight(DrawingContext context, int start, int end, HexLayout layout, double y)
+    private void DrawByteRangeHighlight(DrawingContext context, int start, int end, HexLayout layout, double y, double horizontalOffset)
     {
         if (start >= end)
         {
             return;
         }
 
-        double hexStartX = HexByteX(start, layout.HexPaneX);
-        double hexEndX = HexByteX(end - 1, layout.HexPaneX) + (2 * _charWidth);
+        double hexStartX = HexByteX(start, layout.HexPaneX) - horizontalOffset;
+        double hexEndX = HexByteX(end - 1, layout.HexPaneX) + (2 * _charWidth) - horizontalOffset;
         context.FillRectangle(SelectionBrush, new Rect(hexStartX, y, hexEndX - hexStartX, _lineHeight));
 
-        double asciiStartX = layout.AsciiPaneX + (start * _charWidth);
+        double asciiStartX = layout.AsciiPaneX + (start * _charWidth) - horizontalOffset;
         context.FillRectangle(SelectionBrush, new Rect(asciiStartX, y, (end - start) * _charWidth, _lineHeight));
     }
 
@@ -583,10 +708,15 @@ public sealed class HexView : Control
         }
 
         var layout = ComputeLayout();
-        bool inAsciiPane = position.X >= layout.SeparatorX;
+
+        // Scrolled content coordinates - Render draws every hex/ASCII glyph (and the separator)
+        // shifted left by HorizontalOffset, so a pointer position must be shifted back the same
+        // amount before comparing against the unshifted layout's pane boundaries/cell positions.
+        double contentX = position.X + HorizontalOffset;
+        bool inAsciiPane = contentX >= layout.SeparatorX;
         int byteIndex = inAsciiPane
-            ? AsciiByteIndexFromX(position.X, layout.AsciiPaneX)
-            : HexByteIndexFromX(position.X, layout.HexPaneX);
+            ? AsciiByteIndexFromX(contentX, layout.AsciiPaneX)
+            : HexByteIndexFromX(contentX, layout.HexPaneX);
 
         byteIndex = Math.Clamp(byteIndex, 0, Math.Max(0, row.ByteCount - 1));
         return (new BytePosition(row.RowStartOffset + byteIndex), inAsciiPane);
@@ -595,16 +725,27 @@ public sealed class HexView : Control
     private int AsciiByteIndexFromX(double x, double asciiPaneX) =>
         Math.Clamp((int)((x - asciiPaneX) / _charWidth), 0, BytesPerRow - 1);
 
+    /// <summary>
+    /// Inverts <see cref="HexByteX"/>: the highest byte index whose cell start is at or before
+    /// <paramref name="x"/>. Walked from the last cell down rather than solved algebraically,
+    /// since GapBeforeByte's running total isn't invertible in closed form once it mixes two gap
+    /// sizes - cheap regardless, at most 64 iterations per pointer event.
+    /// </summary>
     private int HexByteIndexFromX(double x, double hexPaneX)
     {
         double relative = Math.Max(0, x - hexPaneX);
-        double halfWidth = (BytesPerRow / 2) * 3 * _charWidth;
-        if (relative >= halfWidth)
+        int bytesPerRow = BytesPerRow;
+
+        for (int i = bytesPerRow - 1; i > 0; i--)
         {
-            relative -= _charWidth;
+            double cellStart = (i * 3 * _charWidth) + (GapBeforeByte(i) * _charWidth);
+            if (relative >= cellStart)
+            {
+                return i;
+            }
         }
 
-        return Math.Clamp((int)(relative / (3 * _charWidth)), 0, BytesPerRow - 1);
+        return 0;
     }
 
     /// <summary>
@@ -1043,4 +1184,17 @@ public sealed class HexView : Control
     }
 
     private long MaxTopLine() => Math.Max(0, TotalRowCount() - FullyVisibleRowCount);
+
+    /// <summary>
+    /// How far the hex+ASCII content (everything right of the offset gutter) overflows the current
+    /// viewport width - zero at the original fixed 16-byte row width on any reasonably-sized window,
+    /// but real once a wider <see cref="BytesPerRow"/> makes that content wider than the control.
+    /// </summary>
+    private double MaxHorizontalOffset()
+    {
+        var layout = ComputeLayout();
+        double contentWidth = (layout.AsciiPaneX + (BytesPerRow * _charWidth)) - layout.GutterWidth;
+        double viewportWidth = Math.Max(0, Bounds.Width - layout.GutterWidth);
+        return Math.Max(0, contentWidth - viewportWidth);
+    }
 }

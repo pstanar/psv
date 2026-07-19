@@ -40,6 +40,84 @@ public class HexViewModeTests
     }
 
     [AvaloniaFact]
+    public void NarrowingTheWindowRevealsTheHorizontalScrollBarForWideHexRows()
+    {
+        // Regression: BytesPerRow used to be a fixed 16, which always fit a normal window - once it
+        // became configurable (32/64), nothing scrolled the hex/ASCII panes into view past the
+        // right edge, and MainWindow's shared HScrollBar stayed forced off in hex mode.
+        using var isolation = new SettingsIsolation();
+        string path = WriteTempBinaryFile();
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Width = 1700;
+                window.Height = 1400;
+                window.Show();
+                window.OpenFile(path);
+                window.HexViewForTests.BytesPerRow = 64;
+
+                window.Width = 300;
+                window.Height = 600;
+
+                Assert.True(window.IsHScrollBarVisibleForTests);
+                Assert.True(window.HScrollBarMaximumForTests > 0);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
+    public void ChangingBytesPerRowRevealsTheVerticalScrollBarWithoutAFileLengthChange()
+    {
+        // Regression: OnProgressTick's vertical-scrollbar refresh used to be gated entirely on the
+        // file's byte length changing (an optimization to skip redraw work on a static file) - but
+        // row count depends on BytesPerRow too, which the View menu can change at any time with the
+        // file's length completely unchanged. That left VScrollBar.IsVisible stuck at whatever it
+        // was computed as before the change, even once the new row width plainly needed scrolling.
+        using var isolation = new SettingsIsolation();
+        string path = Path.GetTempFileName();
+        File.WriteAllBytes(path, new byte[64 * 10]); // 10 rows at 64 bytes/row, 40 rows at 16 bytes/row.
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Width = 900;
+                window.Height = 600;
+                window.Show();
+                window.CaptureRenderedFrame()?.Dispose();
+                window.OpenFile(path, forceBinary: true);
+                window.CaptureRenderedFrame()?.Dispose();
+
+                window.HexViewForTests.BytesPerRow = 64;
+                Assert.False(window.IsVScrollBarVisibleForTests, "test setup: expected 10 rows to fit without scrolling");
+
+                window.HexViewForTests.BytesPerRow = 16;
+
+                Assert.True(window.IsVScrollBarVisibleForTests);
+                Assert.True(window.VScrollBarMaximumForTests > 0);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
     public void OpeningABinaryFileShowsHexViewAndHidesDocumentView()
     {
         using var isolation = new SettingsIsolation();
@@ -214,6 +292,33 @@ public class HexViewModeTests
 
                 Assert.True(window.DocumentForTests?.IsBinary);
                 Assert.True(window.IsHexViewActiveForTests);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
+    public void OpeningWithForcedBytesPerRowSetsHexViewRowWidthAndTheMenuSelection()
+    {
+        // The --bin16/--bin32/--bin64 CLI flags plumb through to here as forcedBytesPerRow.
+        using var isolation = new SettingsIsolation();
+        string path = WriteTempTextFile();
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.OpenFile(path, forcedEncoding: null, enableTailing: null, forceBinary: true, forcedBytesPerRow: 64);
+
+                Assert.Equal(64, window.HexViewForTests.BytesPerRow);
+                Assert.True(window.BytesPerRow64MenuItemCheckedForTests);
             }
             finally
             {

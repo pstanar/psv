@@ -20,6 +20,11 @@ public partial class MainWindow : Window
     // cancelled at the timeout, just no longer waited on, so a save that's merely slow still lands.
     private static readonly TimeSpan SettingsSaveTimeout = TimeSpan.FromSeconds(2);
 
+    // HScrollBar.SmallChange is in text mode's units (characters, set to 4 in XAML) - hex mode's
+    // HorizontalOffset is pixels, where a step of 4 would be imperceptible, so hex mode overrides
+    // it to a step that visibly moves the content per click.
+    private const double HexHorizontalSmallChange = 24;
+
     private PsvDocument? _document;
     private string? _currentFilePath;
     private CancellationTokenSource? _indexCts;
@@ -52,6 +57,7 @@ public partial class MainWindow : Window
         WordWrapMenuItem.IsChecked = DocView.WordWrap;
         ZebraStripingMenuItem.IsChecked = DocView.ZebraStriping;
         LiveTailMenuItem.IsChecked = _tailingEnabled;
+        SyncBytesPerRowMenu();
         UpdateHScrollBarState();
 
         HexV.PropertyChanged += (_, e) =>
@@ -66,6 +72,35 @@ public partial class MainWindow : Window
                 }
 
                 UpdatePositionStatus();
+            }
+            else if (e.Property == HexView.HorizontalOffsetProperty)
+            {
+                if (!_syncingScroll)
+                {
+                    _syncingScroll = true;
+                    HScrollBar.Value = HexV.HorizontalOffset;
+                    _syncingScroll = false;
+                }
+            }
+            else if (e.Property == HexView.BytesPerRowProperty
+                || e.Property == HexView.BoundsProperty
+                || e.Property == HexView.FontFamilyProperty
+                || e.Property == HexView.FontSizeProperty)
+            {
+                // All four feed HexV.MaxHorizontalOffsetValue (row width and font metrics change
+                // the content's total width; a resize changes the viewport it's measured against)
+                // - re-derive whether the shared horizontal scrollbar should show and how far it
+                // can go. BytesPerRow and Bounds.Height feed the *vertical* scrollbar the same way
+                // (row count and rows-per-viewport respectively) - refresh that too.
+                UpdateHScrollBarState();
+                RefreshHexVerticalScrollBounds();
+
+                if (e.Property == HexView.BytesPerRowProperty)
+                {
+                    // Keeps the View menu's radio selection correct even when BytesPerRow changes
+                    // from outside a menu click - e.g. the --bin16/--bin32/--bin64 CLI flags.
+                    SyncBytesPerRowMenu();
+                }
             }
         };
 
@@ -158,7 +193,15 @@ public partial class MainWindow : Window
             }
 
             _syncingScroll = true;
-            DocView.HorizontalOffset = (long)e.NewValue;
+            if (_document is { IsBinary: true })
+            {
+                HexV.HorizontalOffset = e.NewValue;
+            }
+            else
+            {
+                DocView.HorizontalOffset = (long)e.NewValue;
+            }
+
             _syncingScroll = false;
         };
 
@@ -218,6 +261,7 @@ public partial class MainWindow : Window
         HexV.TextColor = ParseColorOrDefault(settings.TextColor, Colors.Black);
         HexV.ZebraEvenColor = ParseColorOrDefault(settings.ZebraEvenColor, Colors.White);
         HexV.ZebraOddColor = ParseColorOrDefault(settings.ZebraOddColor, Color.FromRgb(0xF0, 0xF0, 0xF0));
+        HexV.BytesPerRow = settings.HexBytesPerRow is 16 or 32 or 64 ? settings.HexBytesPerRow : HexView.DefaultBytesPerRow;
 
         if (settings.WindowMaximized)
         {
@@ -251,6 +295,7 @@ public partial class MainWindow : Window
         ZebraStriping = DocView.ZebraStriping,
         FollowSystemTheme = DocView.FollowSystemTheme,
         TailingEnabled = _tailingEnabled,
+        HexBytesPerRow = HexV.BytesPerRow,
 
         FontFamily = DocView.FontFamily.Name,
         FontSize = DocView.FontSize,
@@ -315,6 +360,16 @@ public partial class MainWindow : Window
 
     internal DocumentView DocumentViewForTests => DocView;
 
+    internal bool IsHScrollBarVisibleForTests => HScrollBar.IsVisible;
+
+    internal double HScrollBarMaximumForTests => HScrollBar.Maximum;
+
+    internal bool IsVScrollBarVisibleForTests => VScrollBar.IsVisible;
+
+    internal double VScrollBarMaximumForTests => VScrollBar.Maximum;
+
+    internal bool BytesPerRow64MenuItemCheckedForTests => BytesPerRow64MenuItem.IsChecked;
+
     /// <param name="enableTailing">
     /// Overrides the current live-tail setting for this open (e.g. the CLI --tail switch) - null
     /// leaves whatever the user/settings already have it set to untouched. Updates the View menu
@@ -322,10 +377,16 @@ public partial class MainWindow : Window
     /// </param>
     /// <param name="forceBinary">
     /// Forces binary/hex or text mode rather than auto-detecting from the file's leading bytes
-    /// (the <c>--bin</c> CLI flag or the Ctrl+B view-mode toggle, which reopens the file with the
-    /// opposite of its current <see cref="PsvDocument.IsBinary"/>). Null lets detection decide.
+    /// (the <c>--bin16</c>/<c>--bin32</c>/<c>--bin64</c> CLI flags or the Ctrl+B view-mode toggle,
+    /// which reopens the file with the opposite of its current <see cref="PsvDocument.IsBinary"/>).
+    /// Null lets detection decide.
     /// </param>
-    public void OpenFile(string path, TextEncodingKind? forcedEncoding = null, bool? enableTailing = null, bool? forceBinary = null)
+    /// <param name="forcedBytesPerRow">
+    /// Overrides HexV's row width for this open (16, 32, or 64 - the <c>--bin16</c>/<c>--bin32</c>/
+    /// <c>--bin64</c> CLI flags). Null leaves whatever row width is already set untouched, matching
+    /// <paramref name="enableTailing"/>'s null-means-don't-override convention.
+    /// </param>
+    public void OpenFile(string path, TextEncodingKind? forcedEncoding = null, bool? enableTailing = null, bool? forceBinary = null, int? forcedBytesPerRow = null)
     {
         if (enableTailing is { } tail)
         {
@@ -363,6 +424,11 @@ public partial class MainWindow : Window
         // against a view still pointing at it wouldn't just show stale content, it would throw the
         // instant HexView.MaxTopLine() touches the disposed MappedFileByteSource's ReaderWriterLockSlim.
         ApplyViewMode();
+
+        if (forcedBytesPerRow is { } bytesPerRow)
+        {
+            HexV.BytesPerRow = bytesPerRow;
+        }
 
         DocView.TopLine = 0;
         DocView.HorizontalOffset = 0;
@@ -470,14 +536,14 @@ public partial class MainWindow : Window
             long length = document.FileSizeBytes;
 
             // Nothing changed since the last tick - same early-out as text mode below, just keyed
-            // on byte length instead of line count since there's no index to be "complete".
+            // on byte length instead of line count since there's no index to be "complete". This
+            // only guards *this* tick's redraw/follow-mode work - RefreshHexVerticalScrollBounds
+            // (called independently on BytesPerRow/resize/font changes below) recomputes the
+            // scrollbar itself regardless of whether the file's length moved.
             if (length == _lastKnownByteLength)
             {
                 return;
             }
-
-            long totalRows = (length + HexView.BytesPerRow - 1) / HexView.BytesPerRow;
-            long newMaxTop = Math.Max(0, totalRows - HexV.FullyVisibleRowCount);
 
             // Same _initialIndexSeen guard as text mode, evaluated before it's set below - without
             // it, the very first tick's TopLine == 0 and _lastMaxTop == 0 would trivially satisfy
@@ -485,18 +551,16 @@ public partial class MainWindow : Window
             wasFollowing = _initialIndexSeen && HexV.TopLine >= _lastMaxTop;
 
             HexV.InvalidateVisual();
+            RefreshHexVerticalScrollBounds();
 
-            _syncingScroll = true;
-            VScrollBar.Maximum = newMaxTop;
-            VScrollBar.IsVisible = newMaxTop > 0;
             if (wasFollowing)
             {
-                HexV.TopLine = newMaxTop;
-                VScrollBar.Value = newMaxTop;
+                _syncingScroll = true;
+                HexV.TopLine = _lastMaxTop;
+                VScrollBar.Value = _lastMaxTop;
+                _syncingScroll = false;
             }
-            _syncingScroll = false;
 
-            _lastMaxTop = newMaxTop;
             _lastKnownByteLength = length;
             _initialIndexSeen = true;
         }
@@ -593,7 +657,7 @@ public partial class MainWindow : Window
 
         if (document.IsBinary)
         {
-            long topOffset = HexV.TopLine * HexView.BytesPerRow;
+            long topOffset = HexV.TopLine * HexV.BytesPerRow;
             StatusPositionText.Text = $"Offset 0x{topOffset:X8}  |  {document.FileSizeBytes:N0} bytes";
             return;
         }
@@ -698,14 +762,8 @@ public partial class MainWindow : Window
         GoToLineMenuItem.IsEnabled = !hex;
         CycleEncodingMenuItem.IsEnabled = !hex;
 
-        if (hex)
-        {
-            HScrollBar.IsVisible = false;
-        }
-        else
-        {
-            UpdateHScrollBarState();
-        }
+        UpdateHScrollBarState();
+        RefreshHexVerticalScrollBounds();
     }
 
     private void OnToggleLineNumbers(object? sender, RoutedEventArgs e)
@@ -729,6 +787,25 @@ public partial class MainWindow : Window
     {
         DocView.ZebraStriping = ZebraStripingMenuItem.IsChecked;
         HexV.ZebraStriping = ZebraStripingMenuItem.IsChecked;
+    }
+
+    private void OnBytesPerRowChanged(object? sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem { Tag: string tag } && int.TryParse(tag, out int bytesPerRow))
+        {
+            HexV.BytesPerRow = bytesPerRow;
+        }
+    }
+
+    /// <summary>Reflects HexV's current BytesPerRow in the View menu's radio selection - not automatic, since the menu items aren't data-bound to it (see HexV.PropertyChanged for BytesPerRowProperty).</summary>
+    private void SyncBytesPerRowMenu()
+    {
+        (HexV.BytesPerRow switch
+        {
+            16 => BytesPerRow16MenuItem,
+            64 => BytesPerRow64MenuItem,
+            _ => BytesPerRow32MenuItem,
+        }).IsChecked = true;
     }
 
     private void OnToggleLiveTail(object? sender, RoutedEventArgs e)
@@ -802,21 +879,64 @@ public partial class MainWindow : Window
 
     private void UpdateHScrollBarState()
     {
-        // Hex view rows are always exactly HexView.BytesPerRow bytes wide, so there's no
-        // analogous "line longer than the viewport" concept - ApplyViewMode forces the horizontal
-        // scrollbar off outright whenever hex mode is active, before this can run.
-        if (_document is { IsBinary: true } || DocView.WordWrap)
+        if (_document is { IsBinary: true })
+        {
+            // Unlike DocView's line-length scan, HexV's content width is a closed-form function of
+            // BytesPerRow and font metrics - MaxHorizontalOffsetValue is exact the instant either
+            // changes, no "measured" event to wait for.
+            double overflow = HexV.MaxHorizontalOffsetValue;
+
+            _syncingScroll = true;
+            HScrollBar.Maximum = overflow;
+            HScrollBar.SmallChange = HexHorizontalSmallChange;
+            HScrollBar.IsVisible = overflow > 0;
+            _syncingScroll = false;
+            return;
+        }
+
+        if (DocView.WordWrap)
         {
             HScrollBar.IsVisible = false;
             return;
         }
 
-        int overflow = Math.Max(0, DocView.LastMaxLineLength - DocView.VisibleCharCount);
+        int textOverflow = Math.Max(0, DocView.LastMaxLineLength - DocView.VisibleCharCount);
 
         _syncingScroll = true;
-        HScrollBar.Maximum = overflow;
-        HScrollBar.IsVisible = overflow > 0;
+        HScrollBar.Maximum = textOverflow;
+        HScrollBar.SmallChange = 4;
+        HScrollBar.IsVisible = textOverflow > 0;
         _syncingScroll = false;
+    }
+
+    /// <summary>
+    /// Recomputes the vertical scrollbar's Maximum/IsVisible for hex mode from the document's
+    /// current byte length, HexV.BytesPerRow, and HexV.FullyVisibleRowCount - callable independently
+    /// of OnProgressTick's byte-length-diffing (which exists to skip *redraw* work on an unchanged
+    /// file, not to gate the scrollbar). Row count and visible-row count both depend on state that
+    /// can change without the file's length ever moving - BytesPerRow via the View menu, or the
+    /// viewport height via a window resize - and OnProgressTick's tick only re-fires on the next
+    /// byte-length change, which never comes for a static file. Without this as a separate,
+    /// unconditional recompute, a wider/taller layout that later shrinks back down to needing a
+    /// scrollbar would never actually show one - the same bug this fixes for the horizontal
+    /// scrollbar (see UpdateHScrollBarState) via BytesPerRowProperty/BoundsProperty/font changes.
+    /// </summary>
+    private void RefreshHexVerticalScrollBounds()
+    {
+        if (_document is not { IsBinary: true } document)
+        {
+            return;
+        }
+
+        long totalRows = (document.FileSizeBytes + HexV.BytesPerRow - 1) / HexV.BytesPerRow;
+        long newMaxTop = Math.Max(0, totalRows - HexV.FullyVisibleRowCount);
+
+        _syncingScroll = true;
+        VScrollBar.Maximum = newMaxTop;
+        VScrollBar.IsVisible = newMaxTop > 0;
+        _syncingScroll = false;
+
+        _lastMaxTop = newMaxTop;
     }
 
     // --- Go To Line ---

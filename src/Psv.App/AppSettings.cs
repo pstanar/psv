@@ -19,6 +19,7 @@ public sealed class AppSettings
     public bool ZebraStriping { get; set; } = true;
     public bool FollowSystemTheme { get; set; } = true;
     public bool TailingEnabled { get; set; }
+    public int HexBytesPerRow { get; set; } = HexView.DefaultBytesPerRow;
 
     public string FontFamily { get; set; } = "monospace";
     public double FontSize { get; set; } = 14;

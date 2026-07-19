@@ -37,13 +37,20 @@ public class HexSelectionTests
         return view;
     }
 
-    private static HexView CreateAttachedView(PsvDocument document, out Window window)
+    /// <summary>
+    /// Pinned to the classic 16-byte row width regardless of <see cref="HexView.DefaultBytesPerRow"/>
+    /// - these tests' expected byte arrays and row/column arithmetic were written against a 16-byte
+    /// row, so they'd silently start asserting the wrong thing if the control's own default ever
+    /// changes. See HexRowWidthTests for coverage of the 32/64-byte-row behavior itself.
+    /// </summary>
+    private static HexView CreateAttachedView(PsvDocument document, out Window window, int bytesPerRow = 16)
     {
         var view = new HexView
         {
             FontFamily = new FontFamily("Consolas"),
             FontSize = 14,
             Document = document,
+            BytesPerRow = bytesPerRow,
             Width = 800,
             Height = 300,
         };
@@ -59,7 +66,7 @@ public class HexSelectionTests
     {
         var layout = view.LayoutForTests;
         double charWidth = view.CharWidthForTests;
-        double midGap = byteIndex >= HexView.BytesPerRow / 2 ? charWidth : 0;
+        double midGap = byteIndex >= view.BytesPerRow / 2 ? charWidth : 0;
         double cellStart = layout.HexPaneX + (byteIndex * 3 * charWidth) + midGap;
         return new Point(cellStart + charWidth, (row * view.LineHeightForTests) + (view.LineHeightForTests / 2));
     }
@@ -538,7 +545,7 @@ public class HexSelectionTests
             view.TriggerAutoScrollTickForTests();
 
             Assert.Equal(topLineBefore + 1, view.TopLine);
-            var expectedEdge = new BytePosition(((view.TopLine + view.VisibleRowCount - 1) * HexView.BytesPerRow) + 2);
+            var expectedEdge = new BytePosition(((view.TopLine + view.VisibleRowCount - 1) * view.BytesPerRow) + 2);
             Assert.Equal(expectedEdge, view.SelectionFocusForTests);
         }
         finally
@@ -562,7 +569,7 @@ public class HexSelectionTests
         Window? window = null;
         try
         {
-            var view = new HexView { FontFamily = new FontFamily("Consolas"), FontSize = 14, Document = document, Width = 800, Height = 300 };
+            var view = new HexView { FontFamily = new FontFamily("Consolas"), FontSize = 14, Document = document, BytesPerRow = 16, Width = 800, Height = 300 };
             var focusThief = new Button { Content = "steal focus" };
             var panel = new StackPanel();
             panel.Children.Add(view);

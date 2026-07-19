@@ -30,6 +30,11 @@
                 <MenuItem Header="_Word Wrap" Name="WordWrapMenuItem" ToggleType="CheckBox" Click="OnToggleWordWrap" InputGesture="Ctrl+W" />
                 <MenuItem Header="_Zebra Striping" Name="ZebraStripingMenuItem" ToggleType="CheckBox" Click="OnToggleZebraStriping" InputGesture="Ctrl+Z" />
                 <MenuItem Header="_Live Tail" Name="LiveTailMenuItem" ToggleType="CheckBox" Click="OnToggleLiveTail" InputGesture="Ctrl+T" />
+                <MenuItem Header="_Bytes Per Row">
+                    <MenuItem Header="16" Name="BytesPerRow16MenuItem" ToggleType="Radio" GroupName="BytesPerRow" Click="OnBytesPerRowChanged" Tag="16" />
+                    <MenuItem Header="32" Name="BytesPerRow32MenuItem" ToggleType="Radio" GroupName="BytesPerRow" Click="OnBytesPerRowChanged" Tag="32" />
+                    <MenuItem Header="64" Name="BytesPerRow64MenuItem" ToggleType="Radio" GroupName="BytesPerRow" Click="OnBytesPerRowChanged" Tag="64" />
+                </MenuItem>
                 <Separator />
                 <MenuItem Header="_Appearance..." Click="OnAppearanceClick" />
                 <Separator />
