@@ -29,7 +29,7 @@
                 <MenuItem Header="_Column Ruler" Name="ColumnRulerMenuItem" ToggleType="CheckBox" Click="OnToggleColumnRuler" InputGesture="Ctrl+R" />
                 <MenuItem Header="_Word Wrap" Name="WordWrapMenuItem" ToggleType="CheckBox" Click="OnToggleWordWrap" InputGesture="Ctrl+W" />
                 <MenuItem Header="_Zebra Striping" Name="ZebraStripingMenuItem" ToggleType="CheckBox" Click="OnToggleZebraStriping" InputGesture="Ctrl+Z" />
-                <MenuItem Header="_Live Tail" Name="LiveTailMenuItem" ToggleType="CheckBox" Click="OnToggleLiveTail" InputGesture="Ctrl+T" />
+                <MenuItem Header="Live _Tail" Name="LiveTailMenuItem" ToggleType="CheckBox" Click="OnToggleLiveTail" InputGesture="Ctrl+T" />
                 <MenuItem Header="_Bytes Per Row">
                     <MenuItem Header="16" Name="BytesPerRow16MenuItem" ToggleType="Radio" GroupName="BytesPerRow" Click="OnBytesPerRowChanged" Tag="16" />
                     <MenuItem Header="32" Name="BytesPerRow32MenuItem" ToggleType="Radio" GroupName="BytesPerRow" Click="OnBytesPerRowChanged" Tag="32" />
