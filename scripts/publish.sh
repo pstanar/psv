@@ -32,7 +32,12 @@ else
     build='0'
 fi
 sha=$(git rev-parse --short HEAD)
-echo "Version: ${version}.${build}+${sha}"
+if [[ "$build" == '0' ]]; then
+    version_label="$version"
+else
+    version_label="${version}.${build}"
+fi
+echo "Version: ${version_label}+${sha}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 project="$repo_root/src/Psv.App/Psv.App.csproj"
@@ -55,7 +60,7 @@ for target_rid in "${targets[@]}"; do
         -p:PublishReadyToRun=true \
         "-p:Version=$version" \
         "-p:FileVersion=$version.$build" \
-        "-p:InformationalVersion=$version.$build" \
+        "-p:InformationalVersion=$version_label" \
         "-p:SourceRevisionId=$sha" \
         -o "$out_dir"
 done

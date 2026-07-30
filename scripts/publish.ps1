@@ -28,7 +28,8 @@ $Version = $Version -replace '^v', ''
 $Long = git describe --tags --long 2>$null
 if ($Long -match '-(\d+)-g') { $Build = $Matches[1] } else { $Build = '0' }
 $Sha = git rev-parse --short HEAD
-Write-Host "Version: $Version.$Build+$Sha"
+$VersionLabel = if ($Build -eq '0') { $Version } else { "$Version.$Build" }
+Write-Host "Version: $VersionLabel+$Sha"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot 'src/Psv.App/Psv.App.csproj'
@@ -47,7 +48,7 @@ foreach ($targetRid in $targets) {
         -p:PublishReadyToRun=true `
         "-p:Version=$Version" `
         "-p:FileVersion=$Version.$Build" `
-        "-p:InformationalVersion=$Version.$Build" `
+        "-p:InformationalVersion=$VersionLabel" `
         "-p:SourceRevisionId=$Sha" `
         -o $outDir
 
