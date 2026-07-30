@@ -27,7 +27,7 @@ if ($LASTEXITCODE -ne 0 -or -not $Version) { $Version = '0.0.0' }
 $Version = $Version -replace '^v', ''
 $Long = git describe --tags --long 2>$null
 if ($Long -match '-(\d+)-g') { $Build = $Matches[1] } else { $Build = '0' }
-$Sha = git rev-parse --short HEAD
+$Sha = "g$(git rev-parse --short HEAD)"
 $VersionLabel = if ($Build -eq '0') { $Version } else { "$Version.$Build" }
 Write-Host "Version: $VersionLabel+$Sha"
 

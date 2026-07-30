@@ -31,7 +31,7 @@ if [[ "$long" =~ -([0-9]+)-g[0-9a-f]+$ ]]; then
 else
     build='0'
 fi
-sha=$(git rev-parse --short HEAD)
+sha="g$(git rev-parse --short HEAD)"
 if [[ "$build" == '0' ]]; then
     version_label="$version"
 else
