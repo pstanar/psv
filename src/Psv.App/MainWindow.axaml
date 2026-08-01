@@ -37,7 +37,7 @@
                     <MenuItem Header="64" Name="BytesPerRow64MenuItem" ToggleType="Radio" GroupName="BytesPerRow" Click="OnBytesPerRowChanged" Tag="64" />
                 </MenuItem>
                 <Separator />
-                <MenuItem Header="_Appearance..." Click="OnAppearanceClick" />
+                <MenuItem Header="A_ppearance..." Click="OnAppearanceClick" />
                 <Separator />
                 <MenuItem Header="_About..." Click="OnAboutClick" />
             </MenuItem>
