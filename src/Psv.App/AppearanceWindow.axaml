@@ -4,7 +4,8 @@
         Title="Appearance"
         Width="380" SizeToContent="Height"
         CanResize="False"
-        WindowStartupLocation="CenterOwner">
+        WindowStartupLocation="CenterOwner"
+        KeyDown="OnWindowKeyDown">
     <StackPanel Margin="14" Spacing="10">
         <TextBlock Text="Font family (monospace)" FontWeight="Bold" />
         <ComboBox Name="FontFamilyCombo" IsEditable="True" HorizontalAlignment="Stretch" />

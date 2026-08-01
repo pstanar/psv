@@ -43,6 +43,8 @@ public partial class MainWindow : Window
     // matching PsvDocument's _disposed/_pendingGrow/_pendingReplace flags.
     private volatile bool _tailingEnabled;
 
+    private bool _exitOnEscape;
+
     private PixelPoint _lastNormalPosition;
     private Size _lastNormalSize = new(900, 600);
 
@@ -57,6 +59,7 @@ public partial class MainWindow : Window
         WordWrapMenuItem.IsChecked = DocView.WordWrap;
         ZebraStripingMenuItem.IsChecked = DocView.ZebraStriping;
         LiveTailMenuItem.IsChecked = _tailingEnabled;
+        ExitOnEscapeMenuItem.IsChecked = _exitOnEscape;
         SyncBytesPerRowMenu();
         UpdateHScrollBarState();
 
@@ -245,6 +248,7 @@ public partial class MainWindow : Window
         DocView.ZebraStriping = settings.ZebraStriping;
         DocView.FollowSystemTheme = settings.FollowSystemTheme;
         _tailingEnabled = settings.TailingEnabled;
+        _exitOnEscape = settings.ExitOnEscape;
         DocView.FontFamily = new FontFamily(settings.FontFamily);
         DocView.FontSize = settings.FontSize;
         DocView.TextColor = ParseColorOrDefault(settings.TextColor, Colors.Black);
@@ -295,6 +299,7 @@ public partial class MainWindow : Window
         ZebraStriping = DocView.ZebraStriping,
         FollowSystemTheme = DocView.FollowSystemTheme,
         TailingEnabled = _tailingEnabled,
+        ExitOnEscape = _exitOnEscape,
         HexBytesPerRow = HexV.BytesPerRow,
 
         FontFamily = DocView.FontFamily.Name,
@@ -339,6 +344,8 @@ public partial class MainWindow : Window
     internal bool HasSearchCtsForTests => _searchCts is not null;
 
     internal bool TailingEnabledForTests => _tailingEnabled;
+
+    internal bool ExitOnEscapeForTests => _exitOnEscape;
 
     internal long TopLineForTests => DocView.TopLine;
 
@@ -820,6 +827,17 @@ public partial class MainWindow : Window
         OnToggleLiveTail(this, new RoutedEventArgs());
     }
 
+    private void OnToggleExitOnEscape(object? sender, RoutedEventArgs e)
+    {
+        _exitOnEscape = ExitOnEscapeMenuItem.IsChecked;
+    }
+
+    internal void SetExitOnEscapeForTests(bool enabled)
+    {
+        ExitOnEscapeMenuItem.IsChecked = enabled;
+        OnToggleExitOnEscape(this, new RoutedEventArgs());
+    }
+
     /// <summary>
     /// Starts or stops tailing on the current document to match <see cref="_tailingEnabled"/>.
     /// If the initial index build hasn't finished yet, does nothing on enable - the build's own
@@ -1122,6 +1140,11 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Escape && FindBar.IsVisible)
         {
             CloseFindBar();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape && _exitOnEscape)
+        {
+            Close();
             e.Handled = true;
         }
     }

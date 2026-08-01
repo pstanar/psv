@@ -56,6 +56,7 @@ public class SettingsStoreTests
             ZebraStriping = false,
             FollowSystemTheme = false,
             TailingEnabled = true,
+            ExitOnEscape = true,
             HexBytesPerRow = 64,
             FontFamily = "Consolas",
             FontSize = 16,
@@ -78,6 +79,7 @@ public class SettingsStoreTests
         Assert.Equal(saved.ZebraStriping, loaded.ZebraStriping);
         Assert.Equal(saved.FollowSystemTheme, loaded.FollowSystemTheme);
         Assert.Equal(saved.TailingEnabled, loaded.TailingEnabled);
+        Assert.Equal(saved.ExitOnEscape, loaded.ExitOnEscape);
         Assert.Equal(saved.HexBytesPerRow, loaded.HexBytesPerRow);
         Assert.Equal(saved.FontFamily, loaded.FontFamily);
         Assert.Equal(saved.FontSize, loaded.FontSize);
