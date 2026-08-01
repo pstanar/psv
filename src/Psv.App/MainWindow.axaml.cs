@@ -757,7 +757,7 @@ public partial class MainWindow : Window
         // window opens - so a file opened (or Ctrl+B-toggled) into hex mode would leave focus on
         // the now-hidden DocView and every navigation key would be dead until the user clicked
         // inside the hex view.
-        ((InputElement)(hex ? HexV : DocView)).Focus();
+        FocusActiveView();
 
         StatusEncodingText.IsVisible = !hex;
         StatusLineEndingText.IsVisible = !hex;
@@ -874,13 +874,22 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void OnAboutClick(object? sender, RoutedEventArgs e) => await new AboutWindow().ShowDialog(this);
+    /// <summary>Focuses whichever of DocView/HexV is currently visible, per ApplyViewMode.</summary>
+    private void FocusActiveView() =>
+        ((InputElement)(_document is { IsBinary: true } ? HexV : DocView)).Focus();
+
+    private async void OnAboutClick(object? sender, RoutedEventArgs e)
+    {
+        await new AboutWindow().ShowDialog(this);
+        FocusActiveView();
+    }
 
     private async void OnAppearanceClick(object? sender, RoutedEventArgs e)
     {
         var dialog = new AppearanceWindow();
         dialog.LoadFrom(DocView);
         await dialog.ShowDialog(this);
+        FocusActiveView();
         if (dialog.Applied)
         {
             dialog.ApplyTo(DocView);
