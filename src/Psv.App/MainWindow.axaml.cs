@@ -36,7 +36,9 @@ public partial class MainWindow : Window
     // force an immediate post-reopen assignment back to 0, since a brand new document always starts
     // with an empty index regardless of how far the previous document's had gotten. Cleared on every
     // OpenFile so a stale pending offset from one toggle can never misapply to an unrelated later
-    // open.
+    // open. Also consulted by OnToggleHexView itself when computing the *next* toggle's carryover -
+    // if this is still set at that point, the previous toggle's restore hasn't landed yet, and
+    // DocView.TopLine (still sitting at 0) must not be trusted in its place.
     private long? _pendingRestoreByteOffset;
 
     // Detach target for the currently-subscribed document's Changed event - kept so OpenFile can
@@ -871,11 +873,17 @@ public partial class MainWindow : Window
 
         // Captured before reopening, in the unit the *current* view already has cheaply on hand:
         // HexV's TopLine is already a row/byte-offset multiple, and DocView's TopLine's range was
-        // already resolved to render the current frame, so this never has to wait on indexing.
+        // already resolved to render the current frame, so this never has to wait on indexing. The
+        // one exception is _pendingRestoreByteOffset still being set here: that means the *previous*
+        // toggle's own restore into this very document hasn't landed yet (its index build hasn't
+        // completed) - toggling again before then must carry that still-pending target forward
+        // rather than reading DocView.TopLine, which is still sitting at 0 and would otherwise send
+        // every sufficiently-fast repeated toggle (e.g. holding Ctrl+B) drifting straight to the top.
         bool togglingToBinary = !document.IsBinary;
         long topByteOffset = document.IsBinary
             ? HexV.TopLine * HexV.BytesPerRow
-            : document.Locator.TryGetLineRange(DocView.TopLine, out var range) ? range.StartOffset : 0;
+            : _pendingRestoreByteOffset
+                ?? (document.Locator.TryGetLineRange(DocView.TopLine, out var range) ? range.StartOffset : 0);
 
         // A full reopen, not an in-place flip: DocView's line index and HexV's raw byte access
         // are mutually exclusive on a single PsvDocument (see PsvDocument.IsBinary), so there's no

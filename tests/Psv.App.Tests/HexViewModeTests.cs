@@ -284,6 +284,63 @@ public class HexViewModeTests
     }
 
     [AvaloniaFact]
+    public async Task RapidlyRepeatedTogglingDoesNotDriftThePositionToTheTop()
+    {
+        // Regression: holding Ctrl+B fires the toggle faster than a hex-to-text reopen's index
+        // build can complete, so DocView.TopLine is still sitting at 0 (not yet restored) the next
+        // time OnToggleHexView reads it to compute the *next* toggle's carryover. Reading that stale
+        // 0 instead of the still-pending target silently reset the tracked position to the top on
+        // every such toggle, so a long enough hold always drifted the file back to line 0 even
+        // though no single toggle waited long enough to land there on purpose.
+        using var isolation = new SettingsIsolation();
+        const int lineWidth = HexView.DefaultBytesPerRow;
+        const int lineCount = 500;
+        string path = Path.GetTempFileName();
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < lineCount; i++)
+        {
+            sb.Append($"line{i}".PadRight(lineWidth - 1, '.')).Append('\n');
+        }
+
+        File.WriteAllText(path, sb.ToString());
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Width = 400;
+                window.Height = 200;
+                window.Show();
+                window.OpenFile(path);
+                bool completed = await WaitUntilAsync(() => window.DocumentForTests?.Index.IsComplete == true, TimeSpan.FromSeconds(5));
+                Assert.True(completed, "expected the initial index build to complete");
+
+                window.DocumentViewForTests.TopLine = 200;
+
+                // Four toggles back to a to hex to text to hex to text, back-to-back with no await
+                // in between - none of the intermediate reopened documents' index builds get a
+                // chance to run, exactly like a key held down faster than a reopen can finish.
+                window.ToggleHexViewForTests();
+                window.ToggleHexViewForTests();
+                window.ToggleHexViewForTests();
+                window.ToggleHexViewForTests();
+                Assert.False(window.IsHexViewActiveForTests);
+
+                bool restored = await WaitUntilAsync(() => window.DocumentViewForTests.TopLine == 200, TimeSpan.FromSeconds(5));
+                Assert.True(restored, $"expected TopLine to be restored to 200, still {window.DocumentViewForTests.TopLine}");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
     public void OpeningABinaryFileGivesTheHexViewKeyboardFocus()
     {
         // Regression: nothing focused HexV on open - DocView only ever got focus implicitly by
