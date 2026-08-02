@@ -37,4 +37,32 @@ public class LineIndexTests
 
         Assert.Equal(0, changedCount);
     }
+
+    [Fact]
+    public void TryGetNearestCheckpointByOffsetReturnsFalseWhenEmpty()
+    {
+        var index = new LineIndex();
+        Assert.False(index.TryGetNearestCheckpointByOffset(0, out _));
+    }
+
+    [Fact]
+    public void TryGetNearestCheckpointByOffsetFindsTheGreatestCheckpointAtOrBeforeTheOffset()
+    {
+        var index = new LineIndex();
+        index.SeedInitialCheckpoint(0);
+        index.AppendCheckpoint(new Checkpoint(100, 1_000), 1_000, 100);
+        index.AppendCheckpoint(new Checkpoint(200, 2_000), 2_000, 200);
+
+        Assert.True(index.TryGetNearestCheckpointByOffset(500, out var below));
+        Assert.Equal(new Checkpoint(0, 0), below);
+
+        Assert.True(index.TryGetNearestCheckpointByOffset(1_000, out var exact));
+        Assert.Equal(new Checkpoint(100, 1_000), exact);
+
+        Assert.True(index.TryGetNearestCheckpointByOffset(1_999, out var between));
+        Assert.Equal(new Checkpoint(100, 1_000), between);
+
+        Assert.True(index.TryGetNearestCheckpointByOffset(1_000_000, out var beyond));
+        Assert.Equal(new Checkpoint(200, 2_000), beyond);
+    }
 }

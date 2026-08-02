@@ -136,7 +136,20 @@ public sealed class LineIndex
         Changed?.Invoke();
     }
 
-    public bool TryGetNearestCheckpoint(long lineNumber, out Checkpoint checkpoint)
+    public bool TryGetNearestCheckpoint(long lineNumber, out Checkpoint checkpoint) =>
+        TryGetNearestCheckpointBy(lineNumber, static c => c.LineNumber, out checkpoint);
+
+    /// <summary>
+    /// Same lookup as <see cref="TryGetNearestCheckpoint"/> but keyed on byte offset instead of
+    /// line number - used to resolve a byte offset (e.g. carried over from the hex view) back to
+    /// its containing line without scanning from the very start of the file. Checkpoints are
+    /// monotonic in both fields at once (each one is recorded at a specific line/offset pair as the
+    /// scan advances), so the same binary search works keyed either way.
+    /// </summary>
+    public bool TryGetNearestCheckpointByOffset(long byteOffset, out Checkpoint checkpoint) =>
+        TryGetNearestCheckpointBy(byteOffset, static c => c.ByteOffset, out checkpoint);
+
+    private bool TryGetNearestCheckpointBy(long target, Func<Checkpoint, long> key, out Checkpoint checkpoint)
     {
         lock (_lock)
         {
@@ -152,7 +165,7 @@ public sealed class LineIndex
             while (lo <= hi)
             {
                 int mid = lo + ((hi - lo) / 2);
-                if (_checkpoints[mid].LineNumber <= lineNumber)
+                if (key(_checkpoints[mid]) <= target)
                 {
                     best = mid;
                     lo = mid + 1;

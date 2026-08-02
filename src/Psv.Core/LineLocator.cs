@@ -85,6 +85,44 @@ public sealed class LineLocator(LineIndex index, IByteSource source, TextEncodin
         return results;
     }
 
+    /// <summary>
+    /// The inverse of <see cref="GetLineRanges"/>: the line number whose range contains
+    /// <paramref name="byteOffset"/> (clamped into the source's bounds), or the trailing
+    /// unterminated line if the offset falls past the last terminator. Used to carry a hex-view
+    /// scroll position (a byte offset) back over to the text view when the user toggles view mode
+    /// (see MainWindow.OnToggleHexView) - scans forward from the nearest checkpoint at or before
+    /// the offset via the same <see cref="LineScanWalker"/> as <see cref="GetLineRanges"/>, so its
+    /// cost is bounded by the checkpoint interval rather than by how far into the file the offset
+    /// falls.
+    /// </summary>
+    public long FindLineNumberForOffset(long byteOffset)
+    {
+        long clamped = Math.Clamp(byteOffset, 0, source.Length);
+
+        long lineNumber = 0;
+        long lineStart = 0;
+        if (index.TryGetNearestCheckpointByOffset(clamped, out var checkpoint))
+        {
+            lineNumber = checkpoint.LineNumber;
+            lineStart = checkpoint.ByteOffset;
+        }
+
+        LineScanWalker.Walk(source, Encoding, lineStart, boundary =>
+        {
+            long lineEnd = boundary.Offset + boundary.TerminatorLength;
+            if (clamped < lineEnd)
+            {
+                return true;
+            }
+
+            lineNumber++;
+            lineStart = lineEnd;
+            return false;
+        });
+
+        return lineNumber;
+    }
+
     public string GetLineText(long lineNumber)
     {
         if (!TryGetLineRange(lineNumber, out var range))

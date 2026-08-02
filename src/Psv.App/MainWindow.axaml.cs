@@ -30,6 +30,15 @@ public partial class MainWindow : Window
     private long _lastMaxTop;
     private bool _initialIndexSeen;
 
+    // A byte offset carried over from the hex view by OnToggleHexView, waiting to become DocView's
+    // restored TopLine once the freshly (re)opened document's line index has actually built that
+    // far - DocView.TopLine's own clamp (against Index.KnownLineCount) would otherwise silently
+    // force an immediate post-reopen assignment back to 0, since a brand new document always starts
+    // with an empty index regardless of how far the previous document's had gotten. Cleared on every
+    // OpenFile so a stale pending offset from one toggle can never misapply to an unrelated later
+    // open.
+    private long? _pendingRestoreByteOffset;
+
     // Detach target for the currently-subscribed document's Changed event - kept so OpenFile can
     // unsubscribe from the previous document before replacing it (see OnDocumentChanged).
     private Action? _documentChangedHandler;
@@ -482,7 +491,7 @@ public partial class MainWindow : Window
         // document actually changes - replaces the old 150ms polling timer entirely. Subscribed
         // before BuildIndexAsync below so the build's own Complete() call (always raised, even for
         // a file too small to ever hit a checkpoint) is never missed.
-        _documentChangedHandler = () => OnDocumentChanged(document);
+        _documentChangedHandler = OnDocumentChanged;
         document.Changed += _documentChangedHandler;
 
         // Must run before resetting TopLine below: it's what points DocView/HexV at the new
@@ -503,6 +512,7 @@ public partial class MainWindow : Window
         HScrollBar.Value = 0;
         _lastMaxTop = 0;
         _initialIndexSeen = false;
+        _pendingRestoreByteOffset = null;
 
         Title = $"psv - {path}";
         StatusSizeText.Text = FormatFileSize(document.FileSizeBytes);
@@ -607,9 +617,15 @@ public partial class MainWindow : Window
     /// PsvDocument.Changed's handler - fires on whatever background thread mutated the document
     /// (a checkpoint appended, the build completing, a tail catch-up, an encoding rebuild), so this
     /// only marshals to the UI thread and coalesces. See <see cref="RefreshForDocumentChange"/> for
-    /// the actual refresh logic.
+    /// the actual refresh logic - deliberately reads <c>_document</c> fresh rather than closing over
+    /// whichever document instance raised this particular event: a reopen (e.g. the hex/text view
+    /// toggle) unsubscribes the old document's Changed handler before replacing <c>_document</c>, but
+    /// an event already in flight when that happens can still reach here afterward. Refreshing
+    /// against whatever is current is exactly what should happen in that case - a check against the
+    /// event's original sender would instead risk coalescing away a real change to the new document,
+    /// if that document's own event arrived while a stale one's callback was still queued ahead of it.
     /// </summary>
-    private void OnDocumentChanged(PsvDocument document)
+    private void OnDocumentChanged()
     {
         // Changed can fire many times in quick succession - once per checkpoint during a large
         // initial build (every 4096 lines/1MB), or once per tail catch-up iteration - so this
@@ -624,12 +640,9 @@ public partial class MainWindow : Window
         {
             Interlocked.Exchange(ref _refreshPending, 0);
 
-            // Guards against a reopen having superseded _document, or the window having closed,
-            // since this Post was queued - same pattern as every other posted continuation here.
-            if (ReferenceEquals(_document, document))
-            {
-                RefreshForDocumentChange();
-            }
+            // RefreshForDocumentChange reads _document itself and no-ops if it's null (window
+            // closed since this was queued) - nothing further to guard here.
+            RefreshForDocumentChange();
         });
     }
 
@@ -667,6 +680,19 @@ public partial class MainWindow : Window
                 DocView.InvalidateVisual,
                 RefreshTextVerticalScrollBounds,
                 markInitialSeen: document.Index.IsComplete);
+
+        // A hex-to-text toggle (see OnToggleHexView) leaves the target line waiting here rather
+        // than setting DocView.TopLine immediately, since right after reopening the index hasn't
+        // built that far yet (often not at all) - DocView.TopLine's own clamp against
+        // Index.KnownLineCount would just force it straight back to 0. Safe to resolve on the same
+        // pass that flips Index.IsComplete: wasFollowing above is guaranteed false on that pass
+        // (markInitialSeen only just made _initialIndexSeen true), so nothing here fights a
+        // snap-to-bottom.
+        if (!document.IsBinary && document.Index.IsComplete && _pendingRestoreByteOffset is { } pendingOffset)
+        {
+            _pendingRestoreByteOffset = null;
+            DocView.TopLine = document.Locator.FindLineNumberForOffset(pendingOffset);
+        }
 
         UpdateStatusBar(wasFollowing);
     }
@@ -843,12 +869,41 @@ public partial class MainWindow : Window
 
         TextEncodingKind? forcedEncoding = document.IsManualEncoding ? document.Encoding : null;
 
+        // Captured before reopening, in the unit the *current* view already has cheaply on hand:
+        // HexV's TopLine is already a row/byte-offset multiple, and DocView's TopLine's range was
+        // already resolved to render the current frame, so this never has to wait on indexing.
+        bool togglingToBinary = !document.IsBinary;
+        long topByteOffset = document.IsBinary
+            ? HexV.TopLine * HexV.BytesPerRow
+            : document.Locator.TryGetLineRange(DocView.TopLine, out var range) ? range.StartOffset : 0;
+
         // A full reopen, not an in-place flip: DocView's line index and HexV's raw byte access
         // are mutually exclusive on a single PsvDocument (see PsvDocument.IsBinary), so there's no
         // "hybrid" document with both live at once to swap views on top of. Reopening is cheap
-        // regardless of file size (memory-mapped), at the cost of resetting scroll position -
-        // matching how reference hex editors behave switching modes on a file.
-        OpenFile(path, forcedEncoding, enableTailing: null, forceBinary: !document.IsBinary);
+        // regardless of file size (memory-mapped).
+        OpenFile(path, forcedEncoding, enableTailing: null, forceBinary: togglingToBinary);
+
+        // OpenFile leaves _document unchanged (still `document`) if the reopen failed - nothing to
+        // restore a position into in that case.
+        if (ReferenceEquals(_document, document))
+        {
+            return;
+        }
+
+        // Best-effort carryover to the other view's native unit - "best effort" because a byte
+        // offset doesn't necessarily land exactly on a line boundary in the target text encoding,
+        // but landing mid-line is still far closer than resetting to the top of the file. Hex mode
+        // needs nothing but arithmetic, so it applies immediately; text mode needs the reopened
+        // document's line index, which only exists once RefreshForDocumentChange sees it complete
+        // (see _pendingRestoreByteOffset).
+        if (togglingToBinary)
+        {
+            HexV.TopLine = topByteOffset / HexV.BytesPerRow;
+        }
+        else
+        {
+            _pendingRestoreByteOffset = topByteOffset;
+        }
     }
 
     /// <summary>Shows/hides DocView vs. HexV to match the current document's mode, and disables menu items that don't apply to hex-viewed content.</summary>

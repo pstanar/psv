@@ -169,4 +169,53 @@ public class LineLocatorTests
         Assert.Equal(2, ranges.Count);
         Assert.Equal("line2", locator.DecodeLine(ranges[1]));
     }
+
+    [Fact]
+    public void FindLineNumberForOffsetReturnsOwningLineForEveryByteIncludingTerminators()
+    {
+        // "aa\n" (line 0, offsets 0-2), "bbb\n" (line 1, offsets 3-6), "c" (line 2, offset 7).
+        var (_, locator) = BuildLocator("aa\nbbb\nc");
+
+        Assert.Equal(0, locator.FindLineNumberForOffset(0));
+        Assert.Equal(0, locator.FindLineNumberForOffset(1));
+        Assert.Equal(0, locator.FindLineNumberForOffset(2)); // the '\n' itself still belongs to line 0
+        Assert.Equal(1, locator.FindLineNumberForOffset(3));
+        Assert.Equal(1, locator.FindLineNumberForOffset(6));
+        Assert.Equal(2, locator.FindLineNumberForOffset(7)); // trailing unterminated line
+    }
+
+    [Fact]
+    public void FindLineNumberForOffsetClampsOutOfRangeOffsets()
+    {
+        var (_, locator) = BuildLocator("alpha\nbeta\ngamma");
+
+        Assert.Equal(0, locator.FindLineNumberForOffset(-100));
+        Assert.Equal(2, locator.FindLineNumberForOffset(long.MaxValue));
+    }
+
+    [Fact]
+    public void FindLineNumberForOffsetMatchesGetLineRangesAcrossACheckpointBoundary()
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < 500; i++)
+        {
+            sb.Append('L').Append(i).Append('\n');
+        }
+
+        var (index, locator) = BuildLocator(sb.ToString(), checkpointLineInterval: 100, checkpointByteInterval: long.MaxValue);
+        Assert.True(index.CheckpointCount > 1);
+
+        // Line 150 straddles a checkpoint recorded at line 100 - resolve its start offset via
+        // GetLineRanges, then confirm the reverse lookup lands back on the same line.
+        var range = locator.GetLineRanges(150, 1)[0];
+        Assert.Equal(150, locator.FindLineNumberForOffset(range.StartOffset));
+        Assert.Equal(150, locator.FindLineNumberForOffset(range.StartOffset + range.ContentLength));
+    }
+
+    [Fact]
+    public void FindLineNumberForOffsetOnEmptyFileReturnsLineZero()
+    {
+        var (_, locator) = BuildLocator(string.Empty);
+        Assert.Equal(0, locator.FindLineNumberForOffset(0));
+    }
 }

@@ -217,6 +217,73 @@ public class HexViewModeTests
     }
 
     [AvaloniaFact]
+    public async Task TogglingHexViewCarriesTheScrollPositionOverInBothDirections()
+    {
+        // Regression: Ctrl+B used to always reset to the top of the file, even though the toggled-
+        // to view can resolve the same byte offset (see MainWindow.OnToggleHexView). Each line here
+        // is padded to exactly HexView.DefaultBytesPerRow bytes wide so line N starts at the same
+        // offset as hex row N, making the expected position exact rather than an approximation. A
+        // generous line count plus a short window keeps well clear of MaxTopLine - a file/viewport
+        // shallow enough that every line already fits on screen would clamp any restored TopLine
+        // back to 0 regardless of whether the toggle logic under test worked at all.
+        using var isolation = new SettingsIsolation();
+        const int lineWidth = HexView.DefaultBytesPerRow;
+        const int lineCount = 500;
+        string path = Path.GetTempFileName();
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < lineCount; i++)
+        {
+            sb.Append($"line{i}".PadRight(lineWidth - 1, '.')).Append('\n');
+        }
+
+        File.WriteAllText(path, sb.ToString());
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Width = 400;
+                window.Height = 200;
+                window.Show();
+                window.OpenFile(path);
+                bool completed = await WaitUntilAsync(() => window.DocumentForTests?.Index.IsComplete == true, TimeSpan.FromSeconds(5));
+                Assert.True(completed, "expected the initial index build to complete");
+
+                window.DocumentViewForTests.TopLine = 200;
+                window.ToggleHexViewForTests();
+                Assert.True(window.IsHexViewActiveForTests);
+                Assert.Equal(200, window.HexViewForTests.TopLine);
+
+                // Reopening as text starts a brand new index build - the restored TopLine only
+                // lands once RefreshForDocumentChange sees that build complete (see
+                // MainWindow._pendingRestoreByteOffset), via a Dispatcher.Post that can lag slightly
+                // behind Index.IsComplete itself becoming true (see
+                // SuccessfulIndexingDisposesTheIndexCancellationTokenSource in
+                // MainWindowLifecycleTests for the same lag), so this polls for the actual restored
+                // value rather than just the index build's own completion flag.
+                window.ToggleHexViewForTests();
+                Assert.False(window.IsHexViewActiveForTests);
+                bool restoredToText = await WaitUntilAsync(() => window.DocumentViewForTests.TopLine == 200, TimeSpan.FromSeconds(5));
+                Assert.True(restoredToText, $"expected TopLine to be restored to 200, still {window.DocumentViewForTests.TopLine}");
+
+                window.ToggleHexViewForTests();
+                window.HexViewForTests.TopLine = 350;
+                window.ToggleHexViewForTests();
+                bool restoredToTextAgain = await WaitUntilAsync(() => window.DocumentViewForTests.TopLine == 350, TimeSpan.FromSeconds(5));
+                Assert.True(restoredToTextAgain, $"expected TopLine to be restored to 350, still {window.DocumentViewForTests.TopLine}");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
     public void OpeningABinaryFileGivesTheHexViewKeyboardFocus()
     {
         // Regression: nothing focused HexV on open - DocView only ever got focus implicitly by
