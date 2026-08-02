@@ -420,7 +420,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            StatusStateText.Text = $"Failed to open '{path}': {ex.Message}";
+            SetStatusStateText("Failed to open", $"'{path}': {ex.Message}");
             return;
         }
 
@@ -444,7 +444,7 @@ public partial class MainWindow : Window
         {
             if (ReferenceEquals(_document, document))
             {
-                StatusStateText.Text = $"Live tail stopped: {ex.Message}";
+                SetStatusStateText("Live tail stopped", ex.Message);
             }
         });
 
@@ -543,7 +543,7 @@ public partial class MainWindow : Window
                             // for a document whose build faulted, so nothing would ever correct
                             // that back to the failure message.
                             _progressTimer?.Stop();
-                            StatusStateText.Text = $"Indexing failed: {error.Message}";
+                            SetStatusStateText("Indexing failed", error.Message);
                         }
                     });
                 }
@@ -705,11 +705,24 @@ public partial class MainWindow : Window
 
         UpdatePositionStatus();
 
-        StatusStateText.Text = document.IsBinary
+        SetStatusStateText(document.IsBinary
             ? (isFollowing ? "Following" : "Ready")
             : !document.Index.IsComplete
                 ? $"Indexing... {document.Index.KnownLineCount:N0} lines so far"
-                : isFollowing ? "Following" : "Ready";
+                : isFollowing ? "Following" : "Ready");
+    }
+
+    /// <summary>
+    /// Sets the status-bar state text, with an optional full-detail tooltip for messages too long
+    /// to comfortably fit inline (e.g. an exception message) - hovering reveals the rest instead of
+    /// the status bar clipping or growing to fit. Passing null for <paramref name="detail"/> (the
+    /// default, used for every normal Indexing/Ready/Following state) clears any tooltip left behind
+    /// by an earlier error, so it doesn't linger over unrelated later status text.
+    /// </summary>
+    private void SetStatusStateText(string text, string? detail = null)
+    {
+        StatusStateText.Text = text;
+        ToolTip.SetTip(StatusStateText, detail);
     }
 
     private void UpdatePositionStatus()
