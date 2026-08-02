@@ -82,6 +82,7 @@ public partial class MainWindow : Window
                 }
 
                 UpdatePositionStatus();
+                RefreshFollowStatus();
             }
             else if (e.Property == HexView.HorizontalOffsetProperty)
             {
@@ -145,6 +146,7 @@ public partial class MainWindow : Window
                 }
 
                 UpdatePositionStatus();
+                RefreshFollowStatus();
             }
             else if (e.Property == DocumentView.HorizontalOffsetProperty)
             {
@@ -642,6 +644,27 @@ public partial class MainWindow : Window
     }
 
     // --- Status bar ---
+
+    /// <summary>
+    /// Recomputes "Following" vs "Ready" from the current scroll position and refreshes the status
+    /// bar immediately - called from the TopLine PropertyChanged handlers so a manual scroll away
+    /// from (or back to) the bottom updates the status text right away, rather than waiting for the
+    /// next OnProgressTick, which skips this recomputation entirely whenever the index hasn't grown
+    /// since the last tick (see the early-out comment there) - without this, scrolling away from the
+    /// bottom of an idle tailed file left the status bar stuck on "Following" until the file grew again.
+    /// </summary>
+    private void RefreshFollowStatus()
+    {
+        if (_document is not { } document)
+        {
+            return;
+        }
+
+        bool isFollowing = _initialIndexSeen &&
+            (document.IsBinary ? HexV.TopLine >= _lastMaxTop : DocView.TopLine >= _lastMaxTop);
+
+        UpdateStatusBar(isFollowing);
+    }
 
     private void UpdateStatusBar(bool isFollowing)
     {
