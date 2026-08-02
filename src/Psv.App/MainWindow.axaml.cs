@@ -481,12 +481,19 @@ public partial class MainWindow : Window
                         {
                             if (ReferenceEquals(_document, document))
                             {
+                                // Bring VScrollBar.Maximum up to date *before* the TopLine jump below -
+                                // otherwise the TopLine setter's PropertyChanged handler pushes the new
+                                // TopLine into VScrollBar.Value while Maximum is still its stale/default
+                                // 0, and Avalonia clamps Value back down, rendering the thumb at the top
+                                // even though the view itself is already showing the end of the file.
                                 if (document.IsBinary)
                                 {
+                                    RefreshHexVerticalScrollBounds();
                                     HexV.TopLine = long.MaxValue;
                                 }
                                 else
                                 {
+                                    RefreshTextVerticalScrollBounds();
                                     DocView.TopLine = long.MaxValue;
                                 }
                             }
@@ -584,11 +591,6 @@ public partial class MainWindow : Window
                 return;
             }
 
-            // FullyVisibleLineCount, not VisibleLineCount: must match DocView's own MaxTopLine() so
-            // the scrollbar's Maximum never lets the user drag past the point where DocView clamps
-            // TopLine itself, which would otherwise snap back visually on every such drag.
-            long newMaxTop = Math.Max(0, known - DocView.FullyVisibleLineCount);
-
             // Only apply follow-mode auto-scroll once the initial index build has completed at least
             // once. Without this, the very first tick after opening a file has TopLine == 0 and
             // _lastMaxTop == 0 — trivially "at the bottom" by the >= check — which would snap a
@@ -597,18 +599,18 @@ public partial class MainWindow : Window
 
             DocView.InvalidateVisual();
 
-            _syncingScroll = true;
-            VScrollBar.Maximum = newMaxTop;
-            VScrollBar.IsVisible = newMaxTop > 0;
+            // FullyVisibleLineCount, not VisibleLineCount: must match DocView's own MaxTopLine() so
+            // the scrollbar's Maximum never lets the user drag past the point where DocView clamps
+            // TopLine itself, which would otherwise snap back visually on every such drag.
+            long newMaxTop = RefreshTextVerticalScrollBounds();
+
             if (wasFollowing)
             {
+                _syncingScroll = true;
                 DocView.TopLine = newMaxTop;
                 VScrollBar.Value = newMaxTop;
+                _syncingScroll = false;
             }
-            _syncingScroll = false;
-
-            _lastMaxTop = newMaxTop;
-            _lastKnownLineCount = known;
 
             if (document.Index.IsComplete)
             {
@@ -858,12 +860,17 @@ public partial class MainWindow : Window
             if (document.IsBinary || document.Index.IsComplete)
             {
                 document.StartTailing();
+
+                // Same Maximum-before-jump ordering as OpenFile's initial-tail jump - see the
+                // comment there for why skipping this leaves the scrollbar thumb stuck at the top.
                 if (document.IsBinary)
                 {
+                    RefreshHexVerticalScrollBounds();
                     HexV.TopLine = long.MaxValue;
                 }
                 else
                 {
+                    RefreshTextVerticalScrollBounds();
                     DocView.TopLine = long.MaxValue;
                 }
             }
@@ -964,6 +971,37 @@ public partial class MainWindow : Window
         _syncingScroll = false;
 
         _lastMaxTop = newMaxTop;
+    }
+
+    /// <summary>
+    /// Text-mode counterpart to <see cref="RefreshHexVerticalScrollBounds"/> - recomputes
+    /// VScrollBar's Maximum/IsVisible from the document's current known line count and
+    /// DocView.FullyVisibleLineCount, independent of OnProgressTick's line-count diffing. Needed
+    /// so callers that jump DocView.TopLine straight to end-of-file (the initial live-tail jump in
+    /// OpenFile and SyncTailingToCurrentDocument) can bring Maximum up to date *before* that jump -
+    /// otherwise the TopLine setter's own PropertyChanged handler pushes the new TopLine into
+    /// VScrollBar.Value while Maximum is still stale (e.g. 0 on a freshly opened file), and
+    /// Avalonia's RangeBase silently clamps Value back down, leaving the thumb at the top even
+    /// though DocView is already showing the end of the file.
+    /// </summary>
+    private long RefreshTextVerticalScrollBounds()
+    {
+        if (_document is not { IsBinary: false } document)
+        {
+            return 0;
+        }
+
+        long known = document.Index.KnownLineCount;
+        long newMaxTop = Math.Max(0, known - DocView.FullyVisibleLineCount);
+
+        _syncingScroll = true;
+        VScrollBar.Maximum = newMaxTop;
+        VScrollBar.IsVisible = newMaxTop > 0;
+        _syncingScroll = false;
+
+        _lastMaxTop = newMaxTop;
+        _lastKnownLineCount = known;
+        return newMaxTop;
     }
 
     // --- Go To Line ---
