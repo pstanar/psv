@@ -647,55 +647,52 @@ public partial class MainWindow : Window
             return;
         }
 
-        bool wasFollowing;
-
-        if (document.IsBinary)
-        {
-            // Only apply follow-mode auto-scroll once at least one refresh has happened. Without
-            // this, the very first refresh after opening a file has TopLine == 0 and _lastMaxTop
-            // == 0 - trivially "at the bottom" by the >= check - which would snap a freshly-opened
-            // file straight to its end instead of leaving it at the top.
-            wasFollowing = _initialIndexSeen && HexV.TopLine >= _lastMaxTop;
-
-            HexV.InvalidateVisual();
-            RefreshHexVerticalScrollBounds();
-
-            if (wasFollowing)
-            {
-                _syncingScroll = true;
-                HexV.TopLine = _lastMaxTop;
-                VScrollBar.Value = _lastMaxTop;
-                _syncingScroll = false;
-            }
-
-            _initialIndexSeen = true;
-        }
-        else
-        {
-            wasFollowing = _initialIndexSeen && DocView.TopLine >= _lastMaxTop;
-
-            DocView.InvalidateVisual();
-
-            // FullyVisibleLineCount, not VisibleLineCount: must match DocView's own MaxTopLine() so
-            // the scrollbar's Maximum never lets the user drag past the point where DocView clamps
-            // TopLine itself, which would otherwise snap back visually on every such drag.
-            long newMaxTop = RefreshTextVerticalScrollBounds();
-
-            if (wasFollowing)
-            {
-                _syncingScroll = true;
-                DocView.TopLine = newMaxTop;
-                VScrollBar.Value = newMaxTop;
-                _syncingScroll = false;
-            }
-
-            if (document.Index.IsComplete)
-            {
-                _initialIndexSeen = true;
-            }
-        }
+        // The binary/text branches are structurally identical (was the view already scrolled to
+        // the bottom? redraw, recompute scrollbar bounds, snap back to the bottom if so, mark the
+        // initial view as seen) but differ in concrete view type (HexV/DocView aren't related) and
+        // in exactly when "seen" should latch - a binary document has no build to wait for (see
+        // PsvDocument.IsBinary), so it can latch unconditionally; a text document must wait for
+        // Index.IsComplete, or the very first refresh (TopLine == 0, _lastMaxTop == 0 - trivially
+        // "at the bottom") would snap a freshly-opened file straight to its end.
+        bool wasFollowing = document.IsBinary
+            ? RefreshScrollableView(
+                () => HexV.TopLine,
+                v => HexV.TopLine = v,
+                HexV.InvalidateVisual,
+                RefreshHexVerticalScrollBounds,
+                markInitialSeen: true)
+            : RefreshScrollableView(
+                () => DocView.TopLine,
+                v => DocView.TopLine = v,
+                DocView.InvalidateVisual,
+                RefreshTextVerticalScrollBounds,
+                markInitialSeen: document.Index.IsComplete);
 
         UpdateStatusBar(wasFollowing);
+    }
+
+    /// <summary>Shared by both branches of <see cref="RefreshForDocumentChange"/> - see its comment for why.</summary>
+    private bool RefreshScrollableView(Func<long> getTopLine, Action<long> setTopLine, Action invalidateVisual, Action refreshScrollBounds, bool markInitialSeen)
+    {
+        bool wasFollowing = _initialIndexSeen && getTopLine() >= _lastMaxTop;
+
+        invalidateVisual();
+        refreshScrollBounds();
+
+        if (wasFollowing)
+        {
+            _syncingScroll = true;
+            setTopLine(_lastMaxTop);
+            VScrollBar.Value = _lastMaxTop;
+            _syncingScroll = false;
+        }
+
+        if (markInitialSeen)
+        {
+            _initialIndexSeen = true;
+        }
+
+        return wasFollowing;
     }
 
     // --- Status bar ---
@@ -1099,13 +1096,14 @@ public partial class MainWindow : Window
     /// otherwise the TopLine setter's own PropertyChanged handler pushes the new TopLine into
     /// VScrollBar.Value while Maximum is still stale (e.g. 0 on a freshly opened file), and
     /// Avalonia's RangeBase silently clamps Value back down, leaving the thumb at the top even
-    /// though DocView is already showing the end of the file.
+    /// though DocView is already showing the end of the file. Void, like its hex-mode counterpart -
+    /// the one caller that used to need the new bound back reads _lastMaxTop instead.
     /// </summary>
-    private long RefreshTextVerticalScrollBounds()
+    private void RefreshTextVerticalScrollBounds()
     {
         if (_document is not { IsBinary: false } document)
         {
-            return 0;
+            return;
         }
 
         long known = document.Index.KnownLineCount;
@@ -1117,7 +1115,6 @@ public partial class MainWindow : Window
         _syncingScroll = false;
 
         _lastMaxTop = newMaxTop;
-        return newMaxTop;
     }
 
     // --- Go To Line ---
