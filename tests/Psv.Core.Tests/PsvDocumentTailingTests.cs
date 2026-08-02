@@ -264,6 +264,56 @@ public class PsvDocumentTailingTests
     }
 
     [Fact]
+    public void StartTailingBeforeInitialBuildCompletesThrows()
+    {
+        // Regression test: "safe to call only after the initial build has completed" used to be
+        // documentation-only - nothing stopped a caller from violating it and racing the unguarded
+        // initial Build() against a mutation-lock-guarded Continue(), corrupting checkpoint
+        // ordering. Now enforced as a hard invariant instead of a convention every call site has to
+        // remember.
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, "line1\n");
+
+            using var doc = PsvDocument.Open(path);
+            Assert.False(doc.Index.IsComplete); // BuildIndex() deliberately not called yet
+
+            Assert.Throws<InvalidOperationException>(() => doc.StartTailing(TimeSpan.FromMilliseconds(100)));
+            Assert.False(doc.IsTailingForTests);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void StartTailingBeforeInitialBuildCompletesIsAllowedForBinaryDocuments()
+    {
+        // A binary document never builds an index (see PsvDocument.IsBinary), so Index.IsComplete
+        // never becomes true - the invariant above must not apply to it.
+        byte[] header = [0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00];
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, header);
+
+            using var doc = PsvDocument.Open(path);
+            Assert.True(doc.IsBinary);
+            Assert.False(doc.Index.IsComplete);
+
+            doc.StartTailing(TimeSpan.FromMilliseconds(100));
+
+            Assert.True(doc.IsTailingForTests);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void StartTailingAfterDisposeIsANoOp()
     {
         // Regression test: an async index-build continuation calling StartTailing() can race

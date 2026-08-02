@@ -219,9 +219,15 @@ public sealed class PsvDocument : IDisposable
 
     /// <summary>
     /// Starts watching the file for growth (incremental catch-up via
-    /// <see cref="LineIndexBuilder.Continue"/>) or truncation/replacement (full rebuild). Safe to
-    /// call only after the initial index build has completed.
+    /// <see cref="LineIndexBuilder.Continue"/>) or truncation/replacement (full rebuild). Must not
+    /// be called before the initial index build has completed - enforced below, since a violation
+    /// would race the unguarded initial <see cref="BuildIndexAsync"/>/<see cref="BuildIndex"/>
+    /// against a mutation-lock-guarded <see cref="LineIndexBuilder.Continue"/>, corrupting
+    /// <see cref="LineIndex"/>'s checkpoint ordering.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The document is a text document whose index hasn't finished its initial build yet.
+    /// </exception>
     public void StartTailing(TimeSpan? pollInterval = null)
     {
         StopTailing();
@@ -233,6 +239,17 @@ public sealed class PsvDocument : IDisposable
         if (_disposed)
         {
             return;
+        }
+
+        // A binary document never builds an index (see IsBinary) - Index.IsComplete would never
+        // become true, so that half of the check only applies to text documents. Every current
+        // caller already gates on this (MainWindow's OpenFile/SyncTailingToCurrentDocument, and
+        // ChangeEncodingAsync calling this only after its own rebuild completes) - this makes that a
+        // hard invariant instead of a convention every future call site has to remember correctly.
+        if (!IsBinary && !Index.IsComplete)
+        {
+            throw new InvalidOperationException(
+                "StartTailing must not be called before the initial index build has completed.");
         }
 
         var watcher = new FileTailWatcher(_path, pollInterval ?? DefaultTailPollInterval);
