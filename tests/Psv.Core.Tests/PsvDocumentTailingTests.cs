@@ -224,6 +224,53 @@ public class PsvDocumentTailingTests
     }
 
     [Fact]
+    public async Task RapidAppendsCoalesceIntoFarFewerRemapsThanAppends()
+    {
+        // Regression test: MappedFileByteSource.Remap() fully unmaps and recreates the mapping
+        // under an exclusive write lock on every call - a producer appending many times per second
+        // used to force that teardown-and-recreate on every single append, stalling concurrent UI
+        // reads. The tail loop now waits RemapCoalesceDelay between iterations (after the first) so
+        // a burst of rapid writes collapses into far fewer remaps.
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, "start\n");
+
+            using var doc = PsvDocument.Open(path);
+            doc.BuildIndex();
+            doc.StartTailing(TimeSpan.FromMilliseconds(20));
+            try
+            {
+                const int appendCount = 60;
+                using (var append = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                using (var writer = new StreamWriter(append) { AutoFlush = true })
+                {
+                    for (int i = 0; i < appendCount; i++)
+                    {
+                        writer.Write($"line-{i}\n");
+                        await Task.Delay(2); // far faster than RemapCoalesceDelay
+                    }
+                }
+
+                bool caughtUp = await WaitUntilAsync(() => doc.Index.KnownLineCount == 1 + appendCount, TimeSpan.FromSeconds(5));
+                Assert.True(caughtUp, $"expected {1 + appendCount} lines, got {doc.Index.KnownLineCount}");
+
+                Assert.True(
+                    doc.RemapCountForTests < appendCount / 2,
+                    $"expected far fewer remaps than appends ({appendCount}), got {doc.RemapCountForTests}");
+            }
+            finally
+            {
+                doc.StopTailing();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task TailErrorFiresAndStopsTailingOnAnUnexpectedNonIOException()
     {
         // Regression test: TryRunTailWork used to swallow only IOException, letting anything else

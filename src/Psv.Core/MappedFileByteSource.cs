@@ -24,6 +24,9 @@ public sealed class MappedFileByteSource : IByteSource, IDisposable
     private MemoryMappedViewAccessor? _accessor;
     private long _length;
 
+    /// <summary>Counts actual unmap+remap cycles (not calls where the length hadn't changed) - lets tests verify remap coalescing without timing-based inference.</summary>
+    internal long RemapCount { get; private set; }
+
     public MappedFileByteSource(string path)
     {
         _path = path;
@@ -90,6 +93,7 @@ public sealed class MappedFileByteSource : IByteSource, IDisposable
             DisposeMapping();
             _length = currentLength;
             CreateMapping();
+            RemapCount++;
         }
         finally
         {

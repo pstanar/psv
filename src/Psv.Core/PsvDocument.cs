@@ -11,6 +11,16 @@ public sealed class PsvDocument : IDisposable
 {
     private static readonly TimeSpan DefaultTailPollInterval = TimeSpan.FromMilliseconds(400);
 
+    // MappedFileByteSource.Remap() fully unmaps and recreates the memory mapping under an exclusive
+    // write lock (a read-only mapping can't be created with slack capacity beyond the file's actual
+    // on-disk size, so there's no cheaper way to "leave room to grow into"). A producer appending
+    // many times per second would otherwise force that teardown-and-recreate on every single append,
+    // stalling the UI thread's concurrent reads. Waiting this long between iterations (after the
+    // first, which stays immediate for responsiveness) lets a burst of rapid writes coalesce into
+    // one remap instead of one per append, trading a small amount of freshness latency for far fewer
+    // remaps under sustained fast-write workloads.
+    private static readonly TimeSpan RemapCoalesceDelay = TimeSpan.FromMilliseconds(50);
+
     // How much of the file EncodingDetector gets to work with for its BOM-less UTF-8 validity
     // check - enough to catch non-ASCII bytes that appear a little way into typical log lines,
     // without reading a meaningful fraction of a multi-gigabyte file just to open it.
@@ -81,6 +91,8 @@ public sealed class PsvDocument : IDisposable
     public LineLocator Locator { get; }
 
     internal bool HasReindexCtsForTests => _reindexCts is not null;
+
+    internal long RemapCountForTests => _source.RemapCount;
 
     public static PsvDocument Open(string path, TextEncodingKind? forcedEncoding = null, bool? forceBinary = null)
     {
@@ -327,6 +339,17 @@ public sealed class PsvDocument : IDisposable
                     {
                         _mutationLock.Release();
                     }
+
+                    // Stay "primed" for RemapCoalesceDelay after each remap before deciding whether
+                    // to exit, rather than re-checking the pending flags immediately: a remap this
+                    // cheap (a few KB to a few MB) typically completes well within the gap between
+                    // individual writes from a rapid producer, so without this pause nearly every
+                    // append would find nothing pending yet, exit, and reset _tailBusy - meaning the
+                    // next append spawns a brand new, undelayed Task.Run instead of coalescing into
+                    // this one. The pause costs nothing when the file is actually idle (Index is
+                    // already caught up the instant the remap above finishes) - it only delays how
+                    // soon _tailBusy resets, not how soon new content becomes visible.
+                    await Task.Delay(RemapCoalesceDelay);
                 }
             }
             catch (ObjectDisposedException) when (_disposed)
