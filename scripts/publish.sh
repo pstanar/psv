@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Publishes Psv.App as a self-contained, single-file executable for one or all target RIDs.
+# Publishes Psv.App as a self-contained, single-file executable for one or all target RIDs, then
+# packages each into a single release archive (.zip for win-x64, .tar.gz for linux-x64/osx-arm64).
 #
 # Usage:
 #   ./scripts/publish.sh <win-x64|linux-x64|osx-arm64|all> [configuration]
@@ -48,8 +49,10 @@ else
     targets=("$rid")
 fi
 
+artifacts_dir="$repo_root/artifacts"
+
 for target_rid in "${targets[@]}"; do
-    out_dir="$repo_root/artifacts/$target_rid"
+    out_dir="$artifacts_dir/$target_rid"
     echo "Publishing $target_rid -> $out_dir"
 
     dotnet publish "$project" \
@@ -63,4 +66,30 @@ for target_rid in "${targets[@]}"; do
         "-p:InformationalVersion=$version_label" \
         "-p:SourceRevisionId=$sha" \
         -o "$out_dir"
+
+    # One package per OS, not a universal archive: the natural single-file format differs per
+    # platform (Explorer opens .zip natively on Windows; Unix executables need permission bits a
+    # .zip won't reliably carry, so linux-x64/osx-arm64 get a .tar.gz instead).
+    archive_base="psv-${version_label}-${target_rid}"
+    if [[ "$target_rid" == 'win-x64' ]]; then
+        archive_path="$artifacts_dir/${archive_base}.zip"
+        echo "Packaging $archive_path"
+        rm -f "$archive_path"
+        (cd "$out_dir" && zip -rq "$archive_path" .)
+    else
+        archive_path="$artifacts_dir/${archive_base}.tar.gz"
+        echo "Packaging $archive_path"
+        rm -f "$archive_path"
+
+        # Belt-and-suspenders: dotnet publish already marks a self-contained Linux/macOS apphost
+        # executable when it runs on a matching (or POSIX) host, but this makes the bit explicit
+        # rather than trusting that as an invariant - tar only ever archives whatever mode is
+        # already on disk, so a missing +x here would silently ship a non-executable binary. This
+        # assumes a real POSIX filesystem (Linux, macOS): under Git Bash/MSYS on Windows, chmod
+        # doesn't actually persist onto the underlying NTFS file, so the bit silently doesn't stick
+        # there - use publish.ps1 on Windows instead, which sets it explicitly via .NET's tar writer
+        # rather than relying on chmod.
+        chmod +x "$out_dir/psv"
+        tar -czf "$archive_path" -C "$out_dir" .
+    fi
 done
