@@ -1136,7 +1136,29 @@ public partial class MainWindow : Window
 
         var dialog = new GoToLineWindow();
         dialog.SetLineRange(DocView.TopLine + 1, Math.Max(1, document.Index.KnownLineCount));
-        await dialog.ShowDialog(this);
+
+        // ShowDialog runs a nested dispatcher loop, so a live-tailed, actively-growing file can
+        // keep advancing KnownLineCount while this dialog sits open - without this, the upper bound
+        // stays frozen at whatever it was when the dialog opened, rejecting a line number that has
+        // since become valid. UpdateMaxLine only widens the bound, never touching what the user has
+        // already typed into the box.
+        void OnDocumentChangedWhileOpen() => Dispatcher.UIThread.Post(() =>
+        {
+            if (ReferenceEquals(_document, document))
+            {
+                dialog.UpdateMaxLine(Math.Max(1, document.Index.KnownLineCount));
+            }
+        });
+
+        document.Changed += OnDocumentChangedWhileOpen;
+        try
+        {
+            await dialog.ShowDialog(this);
+        }
+        finally
+        {
+            document.Changed -= OnDocumentChangedWhileOpen;
+        }
 
         if (dialog.ChosenLineNumber is { } lineNumber)
         {
