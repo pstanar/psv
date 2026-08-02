@@ -35,6 +35,13 @@ public partial class MainWindow : Window
     private long _lastKnownByteLength = -1;
     private bool _initialIndexSeen;
 
+    // Tracks whether the most recent tick already saw Index.IsComplete == true, so the tick where
+    // it first flips true is never swallowed by OnProgressTick's early-out - KnownLineCount can be
+    // unchanged on that exact tick (a checkpoint can land exactly on the file's last line, leaving
+    // Complete() nothing to bump), which without this guard left the status bar stuck on
+    // "Indexing..." forever even though indexing had actually finished.
+    private bool _lastIndexComplete;
+
     private DocumentSearcher? _searcher;
     private CancellationTokenSource? _searchCts;
 
@@ -446,6 +453,7 @@ public partial class MainWindow : Window
         _lastKnownLineCount = -1;
         _lastKnownByteLength = -1;
         _initialIndexSeen = false;
+        _lastIndexComplete = false;
 
         Title = $"psv - {path}";
         StatusSizeText.Text = FormatFileSize(document.FileSizeBytes);
@@ -496,6 +504,14 @@ public partial class MainWindow : Window
                                     RefreshTextVerticalScrollBounds();
                                     DocView.TopLine = long.MaxValue;
                                 }
+
+                                // RefreshTextVerticalScrollBounds just advanced _lastKnownLineCount/
+                                // _lastIndexComplete to their current values as a side effect - without
+                                // this call, the next OnProgressTick would see nothing has changed since
+                                // those fields were already updated here, its early-out would fire, and
+                                // UpdateStatusBar (the only thing that ever writes "Ready"/"Following" to
+                                // the status bar) would never run until the file happened to grow again.
+                                UpdateStatusBar(isFollowing: true);
                             }
                         });
                     }
@@ -586,7 +602,11 @@ public partial class MainWindow : Window
             // between growth bursts on a tailed file) — skip all UI work, not just the redraw. Gate
             // on the actual line count, not maxTop: a file small enough to never need scrolling keeps
             // maxTop at 0 both before and after new lines arrive, which would otherwise mask growth.
-            if (known == _lastKnownLineCount && document.Index.IsComplete)
+            // Also gated on _lastIndexComplete (not just IsComplete): a checkpoint can land exactly
+            // on the file's final line, so KnownLineCount can be identical on the tick where
+            // IsComplete first flips true - without this, that tick would be swallowed and the
+            // status bar would stay on "Indexing..." forever instead of ever reaching "Ready".
+            if (known == _lastKnownLineCount && document.Index.IsComplete && _lastIndexComplete)
             {
                 return;
             }
@@ -873,11 +893,17 @@ public partial class MainWindow : Window
                     RefreshTextVerticalScrollBounds();
                     DocView.TopLine = long.MaxValue;
                 }
+
+                // See the matching comment in OpenFile's jump-to-end callback: RefreshTextVerticalScrollBounds
+                // just advanced _lastKnownLineCount/_lastIndexComplete, which would otherwise starve
+                // OnProgressTick's next UpdateStatusBar call until the file grows again.
+                UpdateStatusBar(isFollowing: true);
             }
         }
         else
         {
             document.StopTailing();
+            UpdateStatusBar(isFollowing: false);
         }
     }
 
@@ -1001,6 +1027,7 @@ public partial class MainWindow : Window
 
         _lastMaxTop = newMaxTop;
         _lastKnownLineCount = known;
+        _lastIndexComplete = document.Index.IsComplete;
         return newMaxTop;
     }
 
@@ -1085,6 +1112,7 @@ public partial class MainWindow : Window
             _lastMaxTop = 0;
             _lastKnownLineCount = -1;
             _initialIndexSeen = false;
+            _lastIndexComplete = false;
             DocView.TopLine = 0;
 
             _syncingScroll = true;
