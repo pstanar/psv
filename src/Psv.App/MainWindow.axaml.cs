@@ -235,6 +235,14 @@ public partial class MainWindow : Window
             _indexCts?.Dispose();
             _indexCts = null;
             _document?.Dispose();
+
+            // Unlike _searchCts/_indexCts above, this was never nulled after disposal - a
+            // Dispatcher.Post continuation queued before Close() (e.g. OpenFile's tail-jump-to-end
+            // callback) can still run afterward, and its ReferenceEquals(_document, document) guard
+            // only protects against a *newer* document superseding this one, not against this same
+            // document having just been disposed. Nulling it here makes that guard correctly fail
+            // instead of proceeding to touch a disposed MappedFileByteSource.
+            _document = null;
         };
     }
 
