@@ -177,9 +177,6 @@ public sealed class PsvDocument : IDisposable
                 _builder = builder;
                 await Task.Run(() => builder.Build(Index, cts.Token), cts.Token);
             }
-            catch (OperationCanceledException)
-            {
-            }
             finally
             {
                 _mutationLock.Release();
@@ -189,6 +186,19 @@ public sealed class PsvDocument : IDisposable
             {
                 StartTailing();
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer encoding change, or genuinely cancelled mid-rebuild.
+        }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+            // Document was disposed while this rebuild was in flight (mutation lock, source, or the
+            // rebuild's own scan torn down mid-flight, e.g. the app reopening a different file the
+            // instant a width-changing encoding switch was requested) - mirrors TryRunTailWork's
+            // equivalent guard. Without this, the exception propagated out of ChangeEncodingAsync
+            // uncaught, and MainWindow's caller invokes it fire-and-forget, turning it into another
+            // silently unobserved task exception.
         }
         finally
         {

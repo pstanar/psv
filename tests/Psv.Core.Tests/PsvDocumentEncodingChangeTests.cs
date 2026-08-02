@@ -142,6 +142,38 @@ public class PsvDocumentEncodingChangeTests
     }
 
     [Fact]
+    public async Task DisposeDuringInFlightEncodingRebuildDoesNotThrow()
+    {
+        // Regression test: ChangeEncodingAsync had no ObjectDisposedException guard (unlike
+        // TryRunTailWork's equivalent), so Dispose() racing an in-flight width-changing rebuild
+        // (e.g. the app reopening a different file the instant an encoding switch was requested)
+        // could surface an unhandled exception from the torn-down source/mutation lock, which
+        // MainWindow's fire-and-forget caller had no try/catch around either.
+        var sb = new StringBuilder();
+        for (int i = 0; i < 50_000; i++)
+        {
+            sb.Append("line ").Append(i).Append('\n');
+        }
+
+        string path = WriteTempFile(Encoding.UTF8.GetBytes(sb.ToString()));
+        try
+        {
+            var doc = PsvDocument.Open(path, TextEncodingKind.Utf8);
+            doc.BuildIndex();
+
+            Task<bool> rebuildTask = doc.ChangeEncodingAsync(TextEncodingKind.Utf16LE);
+            doc.Dispose();
+
+            // Must not throw.
+            await rebuildTask;
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task ChangeEncodingDuringActiveTailingDoesNotCorruptIndex()
     {
         string path = WriteTempFile(Encoding.UTF8.GetBytes("line1\nline2\n"));
