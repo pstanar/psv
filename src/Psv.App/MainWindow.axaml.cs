@@ -12,8 +12,6 @@ namespace Psv.App;
 
 public partial class MainWindow : Window
 {
-    private static readonly TimeSpan ProgressTickInterval = TimeSpan.FromMilliseconds(150);
-
     // Bounds how long window close waits on settings persistence - a local per-user JSON file
     // normally writes near-instantly, but a hung/contended config store (e.g. a roaming profile
     // on a flaky network share) must not freeze shutdown indefinitely. The write itself isn't
@@ -28,19 +26,20 @@ public partial class MainWindow : Window
     private PsvDocument? _document;
     private string? _currentFilePath;
     private CancellationTokenSource? _indexCts;
-    private DispatcherTimer? _progressTimer;
     private bool _syncingScroll;
     private long _lastMaxTop;
-    private long _lastKnownLineCount = -1;
-    private long _lastKnownByteLength = -1;
     private bool _initialIndexSeen;
 
-    // Tracks whether the most recent tick already saw Index.IsComplete == true, so the tick where
-    // it first flips true is never swallowed by OnProgressTick's early-out - KnownLineCount can be
-    // unchanged on that exact tick (a checkpoint can land exactly on the file's last line, leaving
-    // Complete() nothing to bump), which without this guard left the status bar stuck on
-    // "Indexing..." forever even though indexing had actually finished.
-    private bool _lastIndexComplete;
+    // Detach target for the currently-subscribed document's Changed event - kept so OpenFile can
+    // unsubscribe from the previous document before replacing it (see OnDocumentChanged).
+    private Action? _documentChangedHandler;
+
+    // Changed can fire many times in quick succession (once per checkpoint during a large initial
+    // build, every 4096 lines/1MB) - coalesces those into a single pending UI refresh instead of
+    // flooding the dispatcher queue with one Post per checkpoint. Guarded with Interlocked rather
+    // than a plain bool since Changed is raised from whatever background thread mutated the
+    // document, not the UI thread.
+    private int _refreshPending;
 
     private DocumentSearcher? _searcher;
     private CancellationTokenSource? _searchCts;
@@ -169,8 +168,8 @@ public partial class MainWindow : Window
                 // metrics also feed UpdateHScrollBarState's overflow calculation. Without this,
                 // resizing the window or changing font size on a static/idle text file left the
                 // scrollbar stuck at its pre-change bounds forever, since RefreshTextVerticalScrollBounds
-                // was otherwise only reachable from OnProgressTick, which stops recomputing once the
-                // index stops growing.
+                // is otherwise only reachable in reaction to the document itself changing
+                // (OnDocumentChanged) - a resize/font change alone never raises that.
                 UpdateHScrollBarState();
                 RefreshTextVerticalScrollBounds();
             }
@@ -242,7 +241,6 @@ public partial class MainWindow : Window
 
         Closed += (_, _) =>
         {
-            _progressTimer?.Stop();
             _searchCts?.Cancel();
             _searchCts?.Dispose();
             _searchCts = null;
@@ -447,10 +445,19 @@ public partial class MainWindow : Window
             return;
         }
 
-        _progressTimer?.Stop();
         _indexCts?.Cancel();
         _indexCts?.Dispose();
         _indexCts = null;
+
+        // Unsubscribe from the outgoing document before disposing it - not strictly required for
+        // correctness (OnDocumentChanged's ReferenceEquals(_document, document) guard would catch a
+        // stale event anyway), but avoids a lingering background task (e.g. a tail catch-up already
+        // in flight) waking the handler for a document that's about to be replaced.
+        if (_document is not null && _documentChangedHandler is not null)
+        {
+            _document.Changed -= _documentChangedHandler;
+        }
+
         _document?.Dispose();
         CloseFindBar();
         _searcher = null;
@@ -471,6 +478,13 @@ public partial class MainWindow : Window
             }
         });
 
+        // The sole trigger for refreshing redraw/scrollbar/status state once something in the
+        // document actually changes - replaces the old 150ms polling timer entirely. Subscribed
+        // before BuildIndexAsync below so the build's own Complete() call (always raised, even for
+        // a file too small to ever hit a checkpoint) is never missed.
+        _documentChangedHandler = () => OnDocumentChanged(document);
+        document.Changed += _documentChangedHandler;
+
         // Must run before resetting TopLine below: it's what points DocView/HexV at the new
         // document in the first place. The old document was just disposed above - a TopLine reset
         // against a view still pointing at it wouldn't just show stale content, it would throw the
@@ -488,10 +502,7 @@ public partial class MainWindow : Window
         VScrollBar.Value = 0;
         HScrollBar.Value = 0;
         _lastMaxTop = 0;
-        _lastKnownLineCount = -1;
-        _lastKnownByteLength = -1;
         _initialIndexSeen = false;
-        _lastIndexComplete = false;
 
         Title = $"psv - {path}";
         StatusSizeText.Text = FormatFileSize(document.FileSizeBytes);
@@ -543,12 +554,11 @@ public partial class MainWindow : Window
                                     DocView.TopLine = long.MaxValue;
                                 }
 
-                                // RefreshTextVerticalScrollBounds just advanced _lastKnownLineCount/
-                                // _lastIndexComplete to their current values as a side effect - without
-                                // this call, the next OnProgressTick would see nothing has changed since
-                                // those fields were already updated here, its early-out would fire, and
-                                // UpdateStatusBar (the only thing that ever writes "Ready"/"Following" to
-                                // the status bar) would never run until the file happened to grow again.
+                                // UpdateStatusBar (the only thing that ever writes "Ready"/"Following"
+                                // to the status bar) is otherwise only called from OnDocumentChanged -
+                                // this jump deliberately forces "Following" and an end-of-file scroll
+                                // regardless of the generic refresh's own idea of "was already at the
+                                // bottom", so it needs its own explicit call here too.
                                 UpdateStatusBar(isFollowing: true);
                             }
                         });
@@ -561,11 +571,17 @@ public partial class MainWindow : Window
                     {
                         if (ReferenceEquals(_document, document))
                         {
-                            // Otherwise the next tick's UpdateStatusBar() overwrites this with
-                            // "Indexing... 0 lines so far" - Index.IsComplete never becomes true
-                            // for a document whose build faulted, so nothing would ever correct
-                            // that back to the failure message.
-                            _progressTimer?.Stop();
+                            // Unsubscribe first: a checkpoint-driven refresh from partial progress
+                            // before the fault (already queued, possibly still in flight) would
+                            // otherwise overwrite this message right back to "Indexing... N lines so
+                            // far" - Index.IsComplete never becomes true for a faulted build, so
+                            // nothing would ever correct it back afterward.
+                            if (_documentChangedHandler is not null)
+                            {
+                                document.Changed -= _documentChangedHandler;
+                                _documentChangedHandler = null;
+                            }
+
                             SetStatusStateText("Indexing failed", error.Message);
                         }
                     });
@@ -585,12 +601,46 @@ public partial class MainWindow : Window
                 });
             },
             TaskScheduler.Default);
-
-        _progressTimer = new DispatcherTimer(ProgressTickInterval, DispatcherPriority.Background, (_, _) => OnProgressTick());
-        _progressTimer.Start();
     }
 
-    private void OnProgressTick()
+    /// <summary>
+    /// PsvDocument.Changed's handler - fires on whatever background thread mutated the document
+    /// (a checkpoint appended, the build completing, a tail catch-up, an encoding rebuild), so this
+    /// only marshals to the UI thread and coalesces. See <see cref="RefreshForDocumentChange"/> for
+    /// the actual refresh logic.
+    /// </summary>
+    private void OnDocumentChanged(PsvDocument document)
+    {
+        // Changed can fire many times in quick succession - once per checkpoint during a large
+        // initial build (every 4096 lines/1MB), or once per tail catch-up iteration - so this
+        // coalesces bursts into a single pending UI refresh instead of flooding the dispatcher queue
+        // with one Post per event. Mirrors PsvDocument's own _tailBusy coalescing pattern.
+        if (Interlocked.CompareExchange(ref _refreshPending, 1, 0) != 0)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            Interlocked.Exchange(ref _refreshPending, 0);
+
+            // Guards against a reopen having superseded _document, or the window having closed,
+            // since this Post was queued - same pattern as every other posted continuation here.
+            if (ReferenceEquals(_document, document))
+            {
+                RefreshForDocumentChange();
+            }
+        });
+    }
+
+    /// <summary>
+    /// Redraws and recomputes scrollbar/follow/status state for the current document - called only
+    /// in reaction to a real change (see <see cref="OnDocumentChanged"/>), replacing what used to be
+    /// a 150ms polling timer that diffed against cached "last known" values to detect whether
+    /// anything had actually changed. Since this now only runs when something genuinely did, that
+    /// diffing (and the cache fields it required) is gone entirely.
+    /// </summary>
+    private void RefreshForDocumentChange()
     {
         if (_document is not { } document)
         {
@@ -601,21 +651,10 @@ public partial class MainWindow : Window
 
         if (document.IsBinary)
         {
-            long length = document.FileSizeBytes;
-
-            // Nothing changed since the last tick - same early-out as text mode below, just keyed
-            // on byte length instead of line count since there's no index to be "complete". This
-            // only guards *this* tick's redraw/follow-mode work - RefreshHexVerticalScrollBounds
-            // (called independently on BytesPerRow/resize/font changes below) recomputes the
-            // scrollbar itself regardless of whether the file's length moved.
-            if (length == _lastKnownByteLength)
-            {
-                return;
-            }
-
-            // Same _initialIndexSeen guard as text mode, evaluated before it's set below - without
-            // it, the very first tick's TopLine == 0 and _lastMaxTop == 0 would trivially satisfy
-            // ">=" and snap a freshly-opened file straight to its end.
+            // Only apply follow-mode auto-scroll once at least one refresh has happened. Without
+            // this, the very first refresh after opening a file has TopLine == 0 and _lastMaxTop
+            // == 0 - trivially "at the bottom" by the >= check - which would snap a freshly-opened
+            // file straight to its end instead of leaving it at the top.
             wasFollowing = _initialIndexSeen && HexV.TopLine >= _lastMaxTop;
 
             HexV.InvalidateVisual();
@@ -629,30 +668,10 @@ public partial class MainWindow : Window
                 _syncingScroll = false;
             }
 
-            _lastKnownByteLength = length;
             _initialIndexSeen = true;
         }
         else
         {
-            long known = document.Index.KnownLineCount;
-
-            // Nothing changed since the last tick (common once a static file finishes indexing, or
-            // between growth bursts on a tailed file) — skip all UI work, not just the redraw. Gate
-            // on the actual line count, not maxTop: a file small enough to never need scrolling keeps
-            // maxTop at 0 both before and after new lines arrive, which would otherwise mask growth.
-            // Also gated on _lastIndexComplete (not just IsComplete): a checkpoint can land exactly
-            // on the file's final line, so KnownLineCount can be identical on the tick where
-            // IsComplete first flips true - without this, that tick would be swallowed and the
-            // status bar would stay on "Indexing..." forever instead of ever reaching "Ready".
-            if (known == _lastKnownLineCount && document.Index.IsComplete && _lastIndexComplete)
-            {
-                return;
-            }
-
-            // Only apply follow-mode auto-scroll once the initial index build has completed at least
-            // once. Without this, the very first tick after opening a file has TopLine == 0 and
-            // _lastMaxTop == 0 — trivially "at the bottom" by the >= check — which would snap a
-            // freshly-opened file straight to its end instead of leaving it at the top.
             wasFollowing = _initialIndexSeen && DocView.TopLine >= _lastMaxTop;
 
             DocView.InvalidateVisual();
@@ -684,10 +703,10 @@ public partial class MainWindow : Window
     /// <summary>
     /// Recomputes "Following" vs "Ready" from the current scroll position and refreshes the status
     /// bar immediately - called from the TopLine PropertyChanged handlers so a manual scroll away
-    /// from (or back to) the bottom updates the status text right away, rather than waiting for the
-    /// next OnProgressTick, which skips this recomputation entirely whenever the index hasn't grown
-    /// since the last tick (see the early-out comment there) - without this, scrolling away from the
-    /// bottom of an idle tailed file left the status bar stuck on "Following" until the file grew again.
+    /// from (or back to) the bottom updates the status text right away. A scroll alone never raises
+    /// PsvDocument.Changed (nothing about the document itself changed), so OnDocumentChanged's
+    /// refresh would never pick this up on its own - without this, scrolling away from the bottom of
+    /// an idle tailed file left the status bar stuck on "Following" until the file grew again.
     /// </summary>
     private void RefreshFollowStatus()
     {
@@ -966,9 +985,9 @@ public partial class MainWindow : Window
                     DocView.TopLine = long.MaxValue;
                 }
 
-                // See the matching comment in OpenFile's jump-to-end callback: RefreshTextVerticalScrollBounds
-                // just advanced _lastKnownLineCount/_lastIndexComplete, which would otherwise starve
-                // OnProgressTick's next UpdateStatusBar call until the file grows again.
+                // Same reasoning as OpenFile's jump-to-end callback: this deliberately forces
+                // "Following" regardless of current scroll position, which a generic
+                // OnDocumentChanged-triggered refresh wouldn't do on its own.
                 UpdateStatusBar(isFollowing: true);
             }
         }
@@ -1044,11 +1063,10 @@ public partial class MainWindow : Window
     /// <summary>
     /// Recomputes the vertical scrollbar's Maximum/IsVisible for hex mode from the document's
     /// current byte length, HexV.BytesPerRow, and HexV.FullyVisibleRowCount - callable independently
-    /// of OnProgressTick's byte-length-diffing (which exists to skip *redraw* work on an unchanged
-    /// file, not to gate the scrollbar). Row count and visible-row count both depend on state that
-    /// can change without the file's length ever moving - BytesPerRow via the View menu, or the
-    /// viewport height via a window resize - and OnProgressTick's tick only re-fires on the next
-    /// byte-length change, which never comes for a static file. Without this as a separate,
+    /// of OnDocumentChanged's refresh (which only reacts to the document itself changing, e.g. the
+    /// file growing). Row count and visible-row count both depend on state that can change without
+    /// the file's length ever moving - BytesPerRow via the View menu, or the viewport height via a
+    /// window resize - neither of which raises PsvDocument.Changed. Without this as a separate,
     /// unconditional recompute, a wider/taller layout that later shrinks back down to needing a
     /// scrollbar would never actually show one - the same bug this fixes for the horizontal
     /// scrollbar (see UpdateHScrollBarState) via BytesPerRowProperty/BoundsProperty/font changes.
@@ -1074,9 +1092,10 @@ public partial class MainWindow : Window
     /// <summary>
     /// Text-mode counterpart to <see cref="RefreshHexVerticalScrollBounds"/> - recomputes
     /// VScrollBar's Maximum/IsVisible from the document's current known line count and
-    /// DocView.FullyVisibleLineCount, independent of OnProgressTick's line-count diffing. Needed
-    /// so callers that jump DocView.TopLine straight to end-of-file (the initial live-tail jump in
-    /// OpenFile and SyncTailingToCurrentDocument) can bring Maximum up to date *before* that jump -
+    /// DocView.FullyVisibleLineCount. Callable independently of a document change (e.g. from
+    /// DocView's Bounds/FontFamily/FontSize handler) as well as from callers that jump
+    /// DocView.TopLine straight to end-of-file (the initial live-tail jump in OpenFile and
+    /// SyncTailingToCurrentDocument), which need Maximum brought up to date *before* that jump -
     /// otherwise the TopLine setter's own PropertyChanged handler pushes the new TopLine into
     /// VScrollBar.Value while Maximum is still stale (e.g. 0 on a freshly opened file), and
     /// Avalonia's RangeBase silently clamps Value back down, leaving the thumb at the top even
@@ -1098,8 +1117,6 @@ public partial class MainWindow : Window
         _syncingScroll = false;
 
         _lastMaxTop = newMaxTop;
-        _lastKnownLineCount = known;
-        _lastIndexComplete = document.Index.IsComplete;
         return newMaxTop;
     }
 
@@ -1182,9 +1199,7 @@ public partial class MainWindow : Window
         if (rebuilt)
         {
             _lastMaxTop = 0;
-            _lastKnownLineCount = -1;
             _initialIndexSeen = false;
-            _lastIndexComplete = false;
             DocView.TopLine = 0;
 
             _syncingScroll = true;
