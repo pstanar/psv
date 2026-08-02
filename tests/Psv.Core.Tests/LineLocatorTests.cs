@@ -115,4 +115,58 @@ public class LineLocatorTests
         Assert.Equal(1, index.KnownLineCount);
         Assert.Equal(huge, locator.GetLineText(0));
     }
+
+    /// <summary>
+    /// Wraps a byte source whose Length getter appends extra bytes to the underlying data as a
+    /// side effect of its Nth call, returning the pre-growth value for that call - simulating growth
+    /// landing exactly in the window right after LineScanWalker.Walk's own internal length check
+    /// decides there's nothing more to scan.
+    /// </summary>
+    private sealed class GrowsAfterNthLengthAccess(MutableByteSource inner, int growAfterCall, byte[] extra) : IByteSource
+    {
+        private int _calls;
+
+        public long Length
+        {
+            get
+            {
+                _calls++;
+                long value = inner.Length;
+                if (_calls == growAfterCall)
+                {
+                    inner.Append(extra);
+                }
+
+                return value;
+            }
+        }
+
+        public int Read(long offset, Span<byte> buffer) => inner.Read(offset, buffer);
+    }
+
+    [Fact]
+    public void GetLineRangesTrailingLineIgnoresGrowthThatHappensAfterScanning()
+    {
+        // Regression test: the trailing unterminated-line fallback used to re-read source.Length
+        // fresh after Walk had already returned (which captured its own, earlier, length snapshot
+        // internally), so growth landing in that gap could make the synthesized last-line range
+        // absorb bytes appended after the scan had conceptually finished. "line1\n" is one full
+        // line; "line2" (5 bytes) is the trailing unterminated content Walk stops on.
+        var mutable = new MutableByteSource(Encoding.UTF8.GetBytes("line1\nline2"));
+        var index = new LineIndex();
+        new LineIndexBuilder(mutable, TextEncodingKind.Utf8).Build(index);
+        Assert.Equal(2, index.KnownLineCount);
+
+        // Walk calls source.Length exactly twice for this input: once to read the 11 available
+        // bytes, once more to observe no bytes remain and stop - growAfterCall: 2 lands the
+        // simulated append right after that second, scan-ending call returns its (correct, 11-byte)
+        // value, mimicking concurrent growth arriving just as the scan wraps up.
+        var growing = new GrowsAfterNthLengthAccess(mutable, growAfterCall: 2, "EXTRA"u8.ToArray());
+        var locator = new LineLocator(index, growing, TextEncodingKind.Utf8);
+
+        var ranges = locator.GetLineRanges(0, 2);
+
+        Assert.Equal(2, ranges.Count);
+        Assert.Equal("line2", locator.DecodeLine(ranges[1]));
+    }
 }

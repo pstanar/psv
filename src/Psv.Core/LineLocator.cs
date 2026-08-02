@@ -47,6 +47,16 @@ public sealed class LineLocator(LineIndex index, IByteSource source, TextEncodin
         long lineStart = checkpoint.ByteOffset;
         long endLineExclusive = startLine + count;
 
+        // Snapshotted once, before scanning, rather than re-reading source.Length after Walk
+        // returns: Walk re-reads the live length on every chunk it reads internally, so a fresh
+        // read afterward could observe further growth that happened mid-scan, and the synthesized
+        // trailing-line range below would then claim bytes that (once a terminator lands there)
+        // actually belong to a subsequent, now-terminated line - producing a momentarily garbled
+        // decoded string for the last visible line. Using one consistent value for both the bound
+        // check and the range length keeps this call internally consistent regardless of concurrent
+        // tail growth; a later call (next repaint/re-scan) picks up whatever grew in the meantime.
+        long sourceLength = source.Length;
+
         LineScanWalker.Walk(source, Encoding, checkpoint.ByteOffset, boundary =>
         {
             if (currentLine >= endLineExclusive)
@@ -67,9 +77,9 @@ public sealed class LineLocator(LineIndex index, IByteSource source, TextEncodin
         if (results.Count < count
             && currentLine >= startLine && currentLine < endLineExclusive
             && currentLine < index.KnownLineCount
-            && lineStart <= source.Length)
+            && lineStart <= sourceLength)
         {
-            results.Add(new LineRange(lineStart, checked((int)(source.Length - lineStart)), 0));
+            results.Add(new LineRange(lineStart, checked((int)(sourceLength - lineStart)), 0));
         }
 
         return results;
