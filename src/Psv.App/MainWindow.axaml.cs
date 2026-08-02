@@ -669,7 +669,7 @@ public partial class MainWindow : Window
         // PsvDocument.IsBinary), so it can latch unconditionally; a text document must wait for
         // Index.IsComplete, or the very first refresh (TopLine == 0, _lastMaxTop == 0 - trivially
         // "at the bottom") would snap a freshly-opened file straight to its end.
-        bool wasFollowing = document.IsBinary
+        bool wasAtBottom = document.IsBinary
             ? RefreshScrollableView(
                 () => HexV.TopLine,
                 v => HexV.TopLine = v,
@@ -687,7 +687,7 @@ public partial class MainWindow : Window
         // than setting DocView.TopLine immediately, since right after reopening the index hasn't
         // built that far yet (often not at all) - DocView.TopLine's own clamp against
         // Index.KnownLineCount would just force it straight back to 0. Safe to resolve on the same
-        // pass that flips Index.IsComplete: wasFollowing above is guaranteed false on that pass
+        // pass that flips Index.IsComplete: wasAtBottom above is guaranteed false on that pass
         // (markInitialSeen only just made _initialIndexSeen true), so nothing here fights a
         // snap-to-bottom.
         if (!document.IsBinary && document.Index.IsComplete && _pendingRestoreByteOffset is { } pendingOffset)
@@ -696,18 +696,23 @@ public partial class MainWindow : Window
             DocView.TopLine = document.Locator.FindLineNumberForOffset(pendingOffset);
         }
 
-        UpdateStatusBar(wasFollowing);
+        // "Following" is a live-tail concept, not just "the view happens to sit at the bottom" -
+        // without _tailingEnabled here, jumping to the end of an idle (non-tailed) file reported
+        // "Following" even though nothing is actually being followed. wasAtBottom on its own still
+        // drives the re-pin above regardless of tailing, since that also matters for e.g. an
+        // encoding-change rebuild landing the user back at the (possibly moved) end of the file.
+        UpdateStatusBar(wasAtBottom && _tailingEnabled);
     }
 
     /// <summary>Shared by both branches of <see cref="RefreshForDocumentChange"/> - see its comment for why.</summary>
     private bool RefreshScrollableView(Func<long> getTopLine, Action<long> setTopLine, Action invalidateVisual, Action refreshScrollBounds, bool markInitialSeen)
     {
-        bool wasFollowing = _initialIndexSeen && getTopLine() >= _lastMaxTop;
+        bool wasAtBottom = _initialIndexSeen && getTopLine() >= _lastMaxTop;
 
         invalidateVisual();
         refreshScrollBounds();
 
-        if (wasFollowing)
+        if (wasAtBottom)
         {
             _syncingScroll = true;
             setTopLine(_lastMaxTop);
@@ -720,7 +725,7 @@ public partial class MainWindow : Window
             _initialIndexSeen = true;
         }
 
-        return wasFollowing;
+        return wasAtBottom;
     }
 
     // --- Status bar ---
@@ -740,10 +745,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        bool isFollowing = _initialIndexSeen &&
+        bool isAtBottom = _initialIndexSeen &&
             (document.IsBinary ? HexV.TopLine >= _lastMaxTop : DocView.TopLine >= _lastMaxTop);
 
-        UpdateStatusBar(isFollowing);
+        // "Following" means live-tailing is actually pinned to a growing end, not merely that the
+        // view happens to be scrolled to the bottom - without _tailingEnabled here, jumping to the
+        // end of an idle file (End key, Go To Line, scrollbar drag) reported "Following" even though
+        // tailing was off and nothing was being followed.
+        UpdateStatusBar(isAtBottom && _tailingEnabled);
     }
 
     private void UpdateStatusBar(bool isFollowing)

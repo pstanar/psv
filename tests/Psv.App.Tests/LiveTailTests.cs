@@ -249,6 +249,52 @@ public class LiveTailTests
     }
 
     [AvaloniaFact]
+    public async Task JumpingToTheEndWithoutLiveTailDoesNotReportFollowing()
+    {
+        // Regression: the status bar said "Following" whenever the view merely happened to sit at
+        // the bottom of the file (End key, Go To Line, scrollbar drag), regardless of whether live
+        // tail was actually on - "Following" should mean tailing is pinned to a growing end, not
+        // just "the scrollbar's at the bottom right now" for a file that isn't being watched at all.
+        using var isolation = new SettingsIsolation();
+        string path = WriteTempFileWithLines(500);
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Show();
+                window.OpenFile(path);
+                bool completed = await WaitUntilAsync(
+                    () => window.DocumentForTests?.Index.IsComplete == true,
+                    TimeSpan.FromSeconds(5));
+                Assert.True(completed, "expected the initial index build to complete");
+
+                // Index.IsComplete can flip true slightly before RefreshForDocumentChange's own
+                // Dispatcher.Post-driven pass actually runs (see
+                // SuccessfulIndexingDisposesTheIndexCancellationTokenSource in
+                // MainWindowLifecycleTests for the same lag) - that pass is what latches
+                // _initialIndexSeen, so wait for its "Ready" status text too before relying on it.
+                bool ready = await WaitUntilAsync(() => window.StatusStateTextForTests == "Ready", TimeSpan.FromSeconds(5));
+                Assert.True(ready, $"expected status to settle on Ready, still {window.StatusStateTextForTests}");
+
+                Assert.False(window.TailingEnabledForTests, "test assumes live tail is off");
+
+                window.DocumentViewForTests.TopLine = long.MaxValue;
+
+                Assert.DoesNotContain("Following", window.StatusStateTextForTests);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [AvaloniaFact]
     public async Task OpenFileWithTailOverrideEnablesTailingForThatOpen()
     {
         // Mirrors what App.axaml.cs does for the --tail CLI switch.
