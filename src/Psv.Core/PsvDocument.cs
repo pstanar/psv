@@ -51,6 +51,17 @@ public sealed class PsvDocument : IDisposable
     /// </summary>
     public event Action<Exception>? TailError;
 
+    /// <summary>
+    /// Raised whenever this document's visible state actually changes - the initial index build
+    /// progressing or completing, live-tail catch-up picking up growth or a truncation/rebuild, or
+    /// an encoding change rebuilding the index. For a text document this is a relay of
+    /// <see cref="LineIndex.Changed"/> (checkpoint granularity, not once per line); for a binary
+    /// document, which never builds an index (see <see cref="IsBinary"/>), it's raised directly by
+    /// <see cref="TryRunTailWork"/> after a successful tail catch-up. Always raised on whatever
+    /// thread performed the mutation - subscribers that touch UI state must marshal themselves.
+    /// </summary>
+    public event Action? Changed;
+
     private PsvDocument(string path, MappedFileByteSource source, TextEncodingKind encoding, int bomLength, bool isManualEncoding, bool isBinary)
     {
         _path = path;
@@ -60,6 +71,7 @@ public sealed class PsvDocument : IDisposable
         IsManualEncoding = isManualEncoding;
         IsBinary = isBinary;
         Index = new LineIndex();
+        Index.Changed += () => Changed?.Invoke();
         Locator = new LineLocator(Index, source, encoding);
         _builder = new LineIndexBuilder(source, encoding, bomLength);
     }
@@ -328,6 +340,14 @@ public sealed class PsvDocument : IDisposable
                             {
                                 _builder.Continue(Index);
                             }
+                        }
+
+                        // A text document already gets this via the Index.Changed relay (Reset/Build/
+                        // Continue above all mutate Index); a binary document never touches Index at
+                        // all (see IsBinary), so nothing else would notify that FileSizeBytes moved.
+                        if (IsBinary)
+                        {
+                            Changed?.Invoke();
                         }
                     }
                     catch (IOException)

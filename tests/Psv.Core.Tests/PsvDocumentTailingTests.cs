@@ -58,6 +58,90 @@ public class PsvDocumentTailingTests
     }
 
     [Fact]
+    public async Task ChangedFiresWhenTailingPicksUpAppendedLinesInTextMode()
+    {
+        // For a text document, Changed is a relay of Index.Changed (raised internally by
+        // Continue()/Build() mutating the index) - no direct wiring needed in PsvDocument itself.
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, "line1\n");
+
+            using var doc = PsvDocument.Open(path);
+            doc.BuildIndex();
+
+            int changedCount = 0;
+            doc.Changed += () => changedCount++;
+
+            doc.StartTailing(TimeSpan.FromMilliseconds(100));
+            try
+            {
+                using (var append = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                using (var writer = new StreamWriter(append))
+                {
+                    writer.Write("line2\n");
+                }
+
+                bool caughtUp = await WaitUntilAsync(() => doc.Index.KnownLineCount == 2, TimeSpan.FromSeconds(5));
+                Assert.True(caughtUp, $"expected 2 lines, got {doc.Index.KnownLineCount}");
+
+                bool fired = await WaitUntilAsync(() => changedCount > 0, TimeSpan.FromSeconds(5));
+                Assert.True(fired, "expected Changed to fire after tailing picked up growth");
+            }
+            finally
+            {
+                doc.StopTailing();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task ChangedFiresWhenTailingPicksUpGrowthInBinaryMode()
+    {
+        // A binary document never touches Index (see PsvDocument.IsBinary), so there's no
+        // Index.Changed relay to rely on - TryRunTailWork must raise Changed directly.
+        byte[] header = [0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00];
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, header);
+
+            using var doc = PsvDocument.Open(path);
+            Assert.True(doc.IsBinary);
+
+            int changedCount = 0;
+            doc.Changed += () => changedCount++;
+
+            doc.StartTailing(TimeSpan.FromMilliseconds(100));
+            try
+            {
+                using (var append = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    append.Write([0x01, 0x02, 0x03, 0x04]);
+                }
+
+                bool grew = await WaitUntilAsync(() => doc.FileSizeBytes == header.Length + 4, TimeSpan.FromSeconds(5));
+                Assert.True(grew, $"expected {header.Length + 4} bytes, got {doc.FileSizeBytes}");
+
+                bool fired = await WaitUntilAsync(() => changedCount > 0, TimeSpan.FromSeconds(5));
+                Assert.True(fired, "expected Changed to fire after tailing picked up growth");
+            }
+            finally
+            {
+                doc.StopTailing();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task TailingHandlesTruncationByRebuildingFromScratch()
     {
         string path = Path.GetTempFileName();

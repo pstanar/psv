@@ -13,6 +13,15 @@ public sealed class LineIndex
     private LineEndingCounts _counts;
 
     /// <summary>
+    /// Raised after a checkpoint-granularity mutation (<see cref="AppendCheckpoint"/>,
+    /// <see cref="Complete"/>, or <see cref="Reset"/>) - not after every line (<see
+    /// cref="RecordLineEnding"/>), which would fire far too often to be useful. Always raised on
+    /// whatever thread performed the mutation (typically a background scan thread), never under
+    /// <see cref="_lock"/> - subscribers that marshal to a UI thread should do so themselves.
+    /// </summary>
+    public event Action? Changed;
+
+    /// <summary>
     /// Lines confirmed by an actual terminator. Unlike <see cref="KnownLineCount"/>, this never
     /// includes the trailing unterminated "virtual" line, which makes it the correct resume point
     /// for <see cref="LineIndexBuilder.Continue"/> — that trailing content isn't actually finished
@@ -86,6 +95,8 @@ public sealed class LineIndex
             ConfirmedLineCount = knownLineCount;
             ConfirmedScanOffset = scannedByteOffset;
         }
+
+        Changed?.Invoke();
     }
 
     /// <summary>
@@ -104,6 +115,8 @@ public sealed class LineIndex
             ScannedByteOffset = sourceLength;
             IsComplete = true;
         }
+
+        Changed?.Invoke();
     }
 
     /// <summary>Discards all state for a full rebuild — used when the file is truncated/replaced.</summary>
@@ -119,6 +132,8 @@ public sealed class LineIndex
             ScannedByteOffset = 0;
             IsComplete = false;
         }
+
+        Changed?.Invoke();
     }
 
     public bool TryGetNearestCheckpoint(long lineNumber, out Checkpoint checkpoint)
