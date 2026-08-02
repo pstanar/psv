@@ -159,6 +159,21 @@ public partial class MainWindow : Window
 
                 UpdatePositionStatus();
             }
+            else if (e.Property == DocumentView.BoundsProperty
+                || e.Property == DocumentView.FontFamilyProperty
+                || e.Property == DocumentView.FontSizeProperty)
+            {
+                // Mirrors HexV's equivalent branch above: a resize changes FullyVisibleLineCount
+                // (the viewport DocView measures against) and a font-size change changes _lineHeight,
+                // both of which feed RefreshTextVerticalScrollBounds' newMaxTop - and Bounds/font
+                // metrics also feed UpdateHScrollBarState's overflow calculation. Without this,
+                // resizing the window or changing font size on a static/idle text file left the
+                // scrollbar stuck at its pre-change bounds forever, since RefreshTextVerticalScrollBounds
+                // was otherwise only reachable from OnProgressTick, which stops recomputing once the
+                // index stops growing.
+                UpdateHScrollBarState();
+                RefreshTextVerticalScrollBounds();
+            }
         };
 
         DocView.ContentMeasured += (_, _) =>

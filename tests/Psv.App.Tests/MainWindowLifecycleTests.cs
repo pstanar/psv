@@ -268,4 +268,55 @@ public class MainWindowLifecycleTests
             File.Delete(path);
         }
     }
+
+    [AvaloniaFact]
+    public async Task ResizingTheWindowRevealsTheTextVerticalScrollBarWithoutAFileLengthChange()
+    {
+        // Regression: DocView's scrollbar refresh used to be reachable only from OnProgressTick,
+        // which stops recomputing once the index stops growing - a window resize changes
+        // FullyVisibleLineCount (how many lines fit) with the file's content completely unchanged,
+        // which left VScrollBar stuck at whatever bounds were computed before the resize. Mirrors
+        // HexViewModeTests.ChangingBytesPerRowRevealsTheVerticalScrollBarWithoutAFileLengthChange.
+        using var isolation = new SettingsIsolation();
+        string path = WriteTempFileWithLines(40);
+        try
+        {
+            var window = new MainWindow();
+            try
+            {
+                window.Width = 900;
+                window.Height = 1400; // tall enough that all 40 lines fit without scrolling
+                window.Show();
+                window.CaptureRenderedFrame()?.Dispose();
+                window.OpenFile(path);
+
+                bool completed = await WaitUntilAsync(
+                    () => window.DocumentForTests?.Index.IsComplete == true,
+                    TimeSpan.FromSeconds(5));
+                Assert.True(completed, "expected the initial index build to complete");
+                window.CaptureRenderedFrame()?.Dispose();
+
+                // RefreshTextVerticalScrollBounds is otherwise only reachable from OnProgressTick's
+                // 150ms timer, so the scrollbar's initial bounds can lag slightly behind IsComplete
+                // becoming true - wait for it to settle before establishing the "fits without
+                // scrolling" baseline the resize below is contrasted against.
+                bool settled = await WaitUntilAsync(() => !window.IsVScrollBarVisibleForTests, TimeSpan.FromSeconds(5));
+                Assert.True(settled, "test setup: expected all lines to fit without scrolling");
+
+                window.Height = 200; // now only a handful of lines fit
+                window.CaptureRenderedFrame()?.Dispose();
+
+                Assert.True(window.IsVScrollBarVisibleForTests);
+                Assert.True(window.VScrollBarMaximumForTests > 0);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }
