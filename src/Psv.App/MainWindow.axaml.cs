@@ -435,6 +435,19 @@ public partial class MainWindow : Window
         _document = document;
         _currentFilePath = path;
 
+        // Surfaces PsvDocument.TailError (an unexpected, non-transient exception from the tail
+        // catch-up loop, which PsvDocument stops retrying once this fires) instead of leaving
+        // tailing silently dead with no indication why. The status text set here may later be
+        // overwritten by a legitimate status change (e.g. scrolling) - acceptable for now since this
+        // is a rare fault-reporting path, not the normal status flow.
+        document.TailError += ex => Dispatcher.UIThread.Post(() =>
+        {
+            if (ReferenceEquals(_document, document))
+            {
+                StatusStateText.Text = $"Live tail stopped: {ex.Message}";
+            }
+        });
+
         // Must run before resetting TopLine below: it's what points DocView/HexV at the new
         // document in the first place. The old document was just disposed above - a TopLine reset
         // against a view still pointing at it wouldn't just show stale content, it would throw the

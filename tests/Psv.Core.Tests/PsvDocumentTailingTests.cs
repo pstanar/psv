@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace Psv.Core.Tests;
 
 public class PsvDocumentTailingTests
@@ -214,6 +216,46 @@ public class PsvDocumentTailingTests
             {
                 doc.StopTailing();
             }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task TailErrorFiresAndStopsTailingOnAnUnexpectedNonIOException()
+    {
+        // Regression test: TryRunTailWork used to swallow only IOException, letting anything else
+        // escape unobserved from the background Task.Run and silently kill tailing forever with no
+        // trace. Reflection is used to force a NullReferenceException from the catch-up path - the
+        // only deterministic way to inject a non-IOException fault, since LineIndexBuilder is sealed
+        // and PsvDocument doesn't expose a seam for a fake one.
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, "line1\n");
+
+            using var doc = PsvDocument.Open(path);
+            doc.BuildIndex();
+
+            Exception? observed = null;
+            doc.TailError += ex => observed = ex;
+
+            doc.StartTailing(TimeSpan.FromMilliseconds(100));
+
+            typeof(PsvDocument).GetField("_builder", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .SetValue(doc, null);
+
+            using (var append = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+            using (var writer = new StreamWriter(append))
+            {
+                writer.Write("line2\n");
+            }
+
+            bool stopped = await WaitUntilAsync(() => !doc.IsTailingForTests, TimeSpan.FromSeconds(5));
+            Assert.True(stopped, "expected tailing to stop after an unexpected exception");
+            Assert.IsType<NullReferenceException>(observed);
         }
         finally
         {

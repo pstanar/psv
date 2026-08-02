@@ -32,6 +32,15 @@ public sealed class PsvDocument : IDisposable
     private volatile bool _pendingReplace;
     private volatile bool _disposed;
 
+    /// <summary>
+    /// Raised when the background tail catch-up loop hits an exception other than a transient
+    /// <see cref="IOException"/> (see <see cref="TryRunTailWork"/>). Tailing is stopped before this
+    /// fires - since <see cref="LineIndexBuilder.Continue"/> always resumes from the exact offset
+    /// that just failed, silently retrying it on every subsequent growth signal would very likely
+    /// hit the identical exception forever, which is worse than surfacing it once and stopping.
+    /// </summary>
+    public event Action<Exception>? TailError;
+
     private PsvDocument(string path, MappedFileByteSource source, TextEncodingKind encoding, int bomLength, bool isManualEncoding, bool isBinary)
     {
         _path = path;
@@ -297,6 +306,19 @@ public sealed class PsvDocument : IDisposable
             {
                 // Document was disposed while this catch-up was in flight (mutation lock or
                 // source torn down mid-loop) — nothing left to update.
+            }
+            catch (Exception ex) when (!_disposed)
+            {
+                // Anything other than a transient IOException (a bug triggered by a specific byte
+                // pattern, a corrupt file, etc.) would very likely recur identically on retry, since
+                // Continue()/Build() always resume from the exact offset that just failed - looping
+                // that silently forever is worse than surfacing it once and stopping. Clearing the
+                // pending flags (in addition to StopTailing disabling the watcher) keeps the re-arm
+                // check below from immediately calling back into a doomed retry.
+                _pendingGrow = false;
+                _pendingReplace = false;
+                StopTailing();
+                TailError?.Invoke(ex);
             }
             finally
             {
